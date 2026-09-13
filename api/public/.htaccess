@@ -1,6 +1,9 @@
 # APIの入口だけを通す。ほかのファイルへ直接触れないようにする。
 <IfModule mod_rewrite.c>
   RewriteEngine On
+  # XserverのPHP/FastCGIにもBearer認証を渡す。
+  RewriteCond %{HTTP:Authorization} ^(.+)$
+  RewriteRule ^ - [E=HTTP_AUTHORIZATION:%1]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteRule ^ index.php [QSA,L]
 </IfModule>

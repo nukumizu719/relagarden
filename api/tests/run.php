@@ -843,6 +843,12 @@ test('本番APIはサイト直下のprivate設定を読む', function (): void {
     );
 });
 
+test('XserverでもBearer認証ヘッダーをPHPへ渡す', function (): void {
+    $rules = (string) file_get_contents(__DIR__ . '/../public/.htaccess');
+    assertTrue(str_contains($rules, 'HTTP:Authorization'), '受信したAuthorizationを見る');
+    assertTrue(str_contains($rules, 'HTTP_AUTHORIZATION'), 'PHPへAuthorizationを渡す');
+});
+
 
 // ══════════════════════════════════════════════════════════
 // Instagram実験
