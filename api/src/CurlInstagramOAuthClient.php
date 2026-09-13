@@ -50,10 +50,10 @@ final class CurlInstagramOAuthClient implements InstagramOAuthClient
     public function profile(string $apiVersion, string $userId, string $accessToken): array
     {
         $url = 'https://graph.instagram.com/' . rawurlencode($apiVersion) . '/'
-            . rawurlencode($userId) . '?fields=user_id,username';
+            . rawurlencode($userId) . '?fields=id,username';
         $result = $this->request('GET', $url, [], $accessToken);
         return [
-            'userId' => $this->requiredString($result, 'user_id'),
+            'userId' => $this->requiredString($result, 'id'),
             'username' => $this->requiredString($result, 'username'),
         ];
     }
