@@ -54,7 +54,7 @@ final class InstagramRouter
 
         if ($tail === '/oauth/start') {
             $this->requireMethod($method, 'POST');
-            $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $deviceId = $auth->requireAdmin($headers['authorization'] ?? null);
             $limiter->hit(
                 'igoauth_' . $deviceId,
                 $this->config->int('rate_max_instagram_oauth_starts'),
@@ -65,13 +65,13 @@ final class InstagramRouter
 
         if ($tail === '/oauth/refresh') {
             $this->requireMethod($method, 'POST');
-            $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $deviceId = $auth->requireAdmin($headers['authorization'] ?? null);
             return [200, ['ok' => true] + $this->oauthService()->refresh($deviceId)];
         }
 
         if ($tail === '/disconnect') {
             $this->requireMethod($method, 'POST');
-            $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $deviceId = $auth->requireAdmin($headers['authorization'] ?? null);
             $this->oauthService()->disconnect($deviceId);
             return [200, ['ok' => true, 'connected' => false]];
         }
