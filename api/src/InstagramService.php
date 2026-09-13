@@ -148,9 +148,12 @@ final class InstagramService
         }
         @chmod($mediaPath, 0600);
 
+        $device = $this->storage->get('devices', $deviceId);
+        $actorName = is_string($device['name'] ?? null) ? (string) $device['name'] : '';
         $draft = [
             'draftId' => $draftId,
             'deviceId' => $deviceId,
+            'actorName' => $actorName,
             'requestId' => $requestId,
             'accountName' => $this->accountName(),
             'igUserId' => $this->config->str('instagram_user_id'),
@@ -386,6 +389,7 @@ final class InstagramService
             $draft['state'] = 'published';
             $draft['mediaId'] = $mediaId;
             $draft['publishedAt'] = time();
+            $draft['publishedBy'] = (string) ($draft['actorName'] ?? '');
             $draft['permalink'] = $this->client->mediaPermalink($mediaId);
             $this->storage->put(self::DRAFTS, $draftId, $draft);
             $this->storage->log('instagram: published draft=' . $draftId);
@@ -663,6 +667,9 @@ final class InstagramService
             'captionHash' => (string) ($draft['captionHash'] ?? ''),
             'message' => self::messageFor($state),
         ];
+        if (is_string($draft['actorName'] ?? null) && $draft['actorName'] !== '') {
+            $view['preparedBy'] = $draft['actorName'];
+        }
         // 確認用の合言葉は、まだ使っていないときだけ返す。
         if ($state === 'ready' && ($draft['nonceUsed'] ?? false) !== true) {
             $view['confirmNonce'] = (string) ($draft['publishNonce'] ?? '');
@@ -671,6 +678,9 @@ final class InstagramService
             $view['mediaId'] = (string) ($draft['mediaId'] ?? '');
             $view['permalink'] = (string) ($draft['permalink'] ?? '');
             $view['publishedAt'] = gmdate('c', is_int($draft['publishedAt'] ?? null) ? $draft['publishedAt'] : time());
+            if (is_string($draft['publishedBy'] ?? null) && $draft['publishedBy'] !== '') {
+                $view['publishedBy'] = $draft['publishedBy'];
+            }
         }
         return $view;
     }

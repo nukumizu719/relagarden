@@ -215,6 +215,7 @@ jobs:
         id: apiconfig
         env:
           PAIRING_CODE: ${{ secrets.RELAGARDEN_API_PAIRING_CODE }}
+          ADMIN_PAIRING_CODE: ${{ secrets.RELAGARDEN_API_ADMIN_PAIRING_CODE }}
           IG_USER_ID: ${{ secrets.RELAGARDEN_INSTAGRAM_USER_ID }}
           IG_ACCOUNT_NAME: ${{ secrets.RELAGARDEN_INSTAGRAM_ACCOUNT_NAME }}
           IG_ACCESS_TOKEN: ${{ secrets.RELAGARDEN_INSTAGRAM_ACCESS_TOKEN }}
@@ -246,6 +247,15 @@ jobs:
           }
 
           safe RELAGARDEN_API_PAIRING_CODE "$PAIRING_CODE" 16
+          if [ -z "$ADMIN_PAIRING_CODE" ]; then
+            echo "RELAGARDEN_API_ADMIN_PAIRING_CODE が未設定です" >&2
+            exit 1
+          fi
+          safe RELAGARDEN_API_ADMIN_PAIRING_CODE "$ADMIN_PAIRING_CODE" 16
+          if [ "$ADMIN_PAIRING_CODE" = "$PAIRING_CODE" ]; then
+            echo "管理者用と投稿者用の合言葉は別々にしてください" >&2
+            exit 1
+          fi
 
           oauth=no
           if [ -n "$IG_APP_ID" ] || [ -n "$IG_APP_SECRET" ]; then
@@ -288,6 +298,7 @@ jobs:
             printf '// GitHub Actions が暗号化Secretsから作ります。手で書き換えないでください。\n'
             printf 'return [\n'
             printf "    'pairing_code' => '%s',\n" "$PAIRING_CODE"
+            printf "    'admin_pairing_code' => '%s',\n" "$ADMIN_PAIRING_CODE"
             printf "    'storage_dir' => '/home/xs674757/relagarden.jp/private/api-storage',\n"
             printf "    'site_base_url' => 'https://relagarden.jp',\n"
             if [ "$oauth" = yes ]; then

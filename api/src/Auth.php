@@ -28,15 +28,20 @@ final class Auth
     /**
      * 合言葉を確かめて、この端末専用のトークンを発行する。
      *
-     * @return array{token:string,deviceId:string}
+     * @return array{token:string,deviceId:string,role:string}
      * @throws ApiError 合言葉が違う場合
      */
     public function pair(string $pairingCode, string $deviceName): array
     {
-        // 文字を1つずつ比べる時間差から合言葉を当てられないようにする。
-        if (!hash_equals($this->config->str('pairing_code'), $pairingCode)) {
+        $adminCode = $this->config->str('admin_pairing_code');
+        $posterCode = $this->config->str('pairing_code');
+        $isAdmin = $adminCode !== '' && hash_equals($adminCode, $pairingCode);
+        $isPoster = hash_equals($posterCode, $pairingCode);
+        if (!$isAdmin && !$isPoster) {
             throw new ApiError(401, 'ペアリングコードが違います');
         }
+        // 管理コード未設定の既存環境だけは、従来コードを管理者として扱う。
+        $role = $isAdmin || $adminCode === '' ? 'admin' : 'poster';
 
         $deviceId = bin2hex(random_bytes(8));
         $token = bin2hex(random_bytes(32));
@@ -44,13 +49,14 @@ final class Auth
         $this->storage->put('devices', $deviceId, [
             'tokenHash' => hash('sha256', $token),
             'name' => mb_substr($deviceName, 0, 60),
+            'role' => $role,
             'pairedAt' => gmdate('c'),
             'revoked' => false,
         ]);
         $this->storage->log(sprintf('paired device=%s', $deviceId));
 
         // トークンを返すのはこの1回だけ。サーバーには残らない。
-        return ['token' => $token, 'deviceId' => $deviceId];
+        return ['token' => $token, 'deviceId' => $deviceId, 'role' => $role];
     }
 
     /**
@@ -92,5 +98,18 @@ final class Auth
         $record['revokedAt'] = gmdate('c');
         $this->storage->put('devices', $deviceId, $record);
         $this->storage->log(sprintf('revoked device=%s', $deviceId));
+    }
+
+    /** Instagramの連携設定を変更できる管理端末だけを通す。 */
+    public function requireAdmin(?string $authorizationHeader): string
+    {
+        $deviceId = $this->requireDevice($authorizationHeader);
+        $record = $this->storage->get('devices', $deviceId);
+        // roleを持たない既存トークンは後方互換のため管理者扱い。
+        $role = is_string($record['role'] ?? null) ? $record['role'] : 'admin';
+        if ($role !== 'admin') {
+            throw new ApiError(403, 'この端末ではInstagramの連携設定を変更できません');
+        }
+        return $deviceId;
     }
 }

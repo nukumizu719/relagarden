@@ -69,6 +69,7 @@ final class Router
                 return [200, [
                     'ok' => true,
                     'token' => $result['deviceId'] . '.' . $result['token'],
+                    'role' => $result['role'],
                 ]];
             }
 

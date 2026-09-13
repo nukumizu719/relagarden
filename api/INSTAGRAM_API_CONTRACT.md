@@ -1,10 +1,10 @@
-# Instagram連携 API契約（Macアプリ向け）
+# Instagram連携 API契約（アプリ向け）
 
 Macアプリが保持する秘密は、既存のXserver端末トークンだけです。Meta App Secret、短期・長期InstagramアクセストークンはXserver内だけで扱い、API応答へ含めません。
 
 ## 接続
 
-- `POST /api/instagram/oauth/start`（端末認証必須）
+- `POST /api/instagram/oauth/start`（管理者端末の認証必須）
   - 応答: `authorizationUrl`, `expiresAt`
   - MacはURLを既定ブラウザで開きます。
 - `GET /api/instagram/oauth/callback?code=...&state=...`（Metaからの戻り先）
@@ -13,8 +13,15 @@ Macアプリが保持する秘密は、既存のXserver端末トークンだけ�
   - ブラウザには「連携完了。アプリへ戻る」の案内だけを表示します。
 - `GET /api/instagram/account`（端末認証必須）
   - 応答: `configured`, `connected`, `accountName`, `expiresAt`
-- `POST /api/instagram/oauth/refresh`（端末認証必須）
-- `POST /api/instagram/disconnect`（端末認証必須）
+- `POST /api/instagram/oauth/refresh`（管理者端末の認証必須）
+- `POST /api/instagram/disconnect`（管理者端末の認証必須）
+
+## 3人で同じ公式アカウントを使う
+
+- 管理者本人は管理者用合言葉で端末を登録し、連携設定と投稿の両方を行います。
+- 谷口さんと奥さまは投稿者用合言葉で、それぞれの端末を別々に登録します。
+- 投稿者端末は準備・確認・投稿ができますが、OAuthの開始・更新・解除はできません。
+- 下書きと投稿結果には端末登録時の名前を `preparedBy` / `publishedBy` として返します。
 
 ## 投稿
 
@@ -39,6 +46,8 @@ Macアプリが保持する秘密は、既存のXserver端末トークンだけ�
 
 GitHub Actionsの暗号化Secretsに次を登録します。値はコード、PR、ログへ書きません。
 
+- `RELAGARDEN_API_PAIRING_CODE`（投稿者用。16文字以上）
+- `RELAGARDEN_API_ADMIN_PAIRING_CODE`（管理者用。16文字以上、投稿者用とは別）
 - `RELAGARDEN_INSTAGRAM_APP_ID`
 - `RELAGARDEN_INSTAGRAM_APP_SECRET`
 

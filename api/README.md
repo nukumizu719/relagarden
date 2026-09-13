@@ -56,7 +56,8 @@ APIが消えることはありません。
 | 項目 | 何を入れるか |
 | --- | --- |
 | `github_token` | GitHubのFine-grained PAT（このリポジトリのContents書き込みだけ） |
-| `pairing_code` | iPhoneと連携するときの合言葉（8文字以上） |
+| `pairing_code` | 投稿者のiPhoneと連携するときの合言葉（8文字以上） |
+| `admin_pairing_code` | 管理者本人のiPhoneと連携するときの別の合言葉（8文字以上） |
 
 ⚠️ **GitHubやXserverの管理パスワードは使わないでください。**
 この用途だけの限定キーにしてください。

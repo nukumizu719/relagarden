@@ -177,6 +177,7 @@ function igOAuthWorkspace(): array
     $dir = sys_get_temp_dir() . '/relagarden-ig-oauth-' . bin2hex(random_bytes(6));
     $config = new Config([
         'pairing_code' => 'pairing-code-1234',
+        'admin_pairing_code' => 'admin-code-56789',
         'storage_dir' => $dir,
         'instagram_app_id' => '1234567890',
         'instagram_app_secret' => 'APP_SECRET_MUST_NOT_LEAK',
@@ -187,11 +188,26 @@ function igOAuthWorkspace(): array
     $oauth = new FakeInstagramOAuthClient();
     $router = new Router($config, $storage, new FakeGitHubClient(), null, $oauth);
     [, $paired] = $router->handle('POST', '/pairing', json_encode([
-        'pairingCode' => 'pairing-code-1234',
+        'pairingCode' => 'admin-code-56789',
         'deviceName' => 'Mac',
     ]), [], '203.0.113.1');
     return [$config, $storage, $router, $oauth, 'Bearer ' . $paired['token']];
 }
+
+test('投稿者端末はOAuth連携設定を変更できない', function (): void {
+    [, , $router] = igOAuthWorkspace();
+    [, $poster] = $router->handle('POST', '/pairing', json_encode([
+        'pairingCode' => 'pairing-code-1234',
+        'deviceName' => '谷口さん',
+    ]), [], '203.0.113.2');
+    $headers = ['authorization' => 'Bearer ' . $poster['token']];
+
+    foreach (['/instagram/oauth/start', '/instagram/oauth/refresh', '/instagram/disconnect'] as $route) {
+        [$status, $payload] = $router->handle('POST', $route, '', $headers, '203.0.113.2');
+        assertSame(403, $status, $route . ' は管理者だけ');
+        assertTrue(($payload['ok'] ?? true) === false);
+    }
+});
 
 test('開始URLは必要最小限の2権限とstateを持つ', function (): void {
     [, , $router, , $token] = igOAuthWorkspace();
@@ -356,6 +372,30 @@ test('正しい合言葉でトークンを発行する', function (): void {
     $result = $auth->pair('test-pairing-code', 'よしさんのiPhone');
     assertTrue(strlen($result['token']) === 64, 'トークンの長さが違う');
     assertTrue(strlen($result['deviceId']) === 16, '端末IDの長さが違う');
+    assertSame('admin', $result['role'], '既存設定は管理者として維持する');
+});
+
+test('管理者用と投稿者用の合言葉で役割を分ける', function (): void {
+    $storage = freshStorage();
+    $config = new Config([
+        'pairing_code' => 'poster-code-1234',
+        'admin_pairing_code' => 'admin-code-56789',
+        'storage_dir' => sys_get_temp_dir() . '/relagarden-api-role-test',
+    ] + Config::defaults());
+    $auth = new Auth($config, $storage);
+
+    $admin = $auth->pair('admin-code-56789', '管理者');
+    $poster = $auth->pair('poster-code-1234', '谷口さん');
+
+    assertSame('admin', $admin['role']);
+    assertSame('poster', $poster['role']);
+    assertSame('admin', $storage->get('devices', $admin['deviceId'])['role'] ?? '');
+    assertSame('poster', $storage->get('devices', $poster['deviceId'])['role'] ?? '');
+    $auth->requireAdmin('Bearer ' . $admin['deviceId'] . '.' . $admin['token']);
+    assertThrows(
+        403,
+        fn() => $auth->requireAdmin('Bearer ' . $poster['deviceId'] . '.' . $poster['token'])
+    );
 });
 
 test('合言葉が違えば断る', function (): void {
@@ -775,6 +815,22 @@ test('合言葉が短すぎると断る', function (): void {
     }
 });
 
+test('管理者用と投稿者用の合言葉が同じなら断る', function (): void {
+    $path = sys_get_temp_dir() . '/relagarden-same-role-config.php';
+    file_put_contents($path, '<?php return ' . var_export([
+        'pairing_code' => 'same-pairing-code',
+        'admin_pairing_code' => 'same-pairing-code',
+    ], true) . ';');
+    try {
+        Config::load($path);
+        throw new RuntimeException('同じ合言葉が通った');
+    } catch (\Relagarden\Api\ConfigMissing $e) {
+        assertTrue(str_contains($e->getMessage(), '別々'));
+    } finally {
+        @unlink($path);
+    }
+});
+
 
 // ══════════════════════════════════════════════════════════
 // Instagram実験
@@ -848,6 +904,27 @@ test('prepareを呼んでも、公開は一度も呼ばれない', function (): 
     assertTrue(!isset($result['confirmNonce']), '確認用の合言葉はまだ渡さない');
     assertSame(1, $fake->containerCalls, '入れ物は1回作る');
     assertSame(0, $fake->publishCalls, '**公開は呼ばれてはいけない**');
+});
+
+test('準備と公開の結果に操作した端末名を残す', function (): void {
+    [$config, $storage] = igWorkspace();
+    $auth = new Auth($config, $storage);
+    $paired = $auth->pair('pairing-code-1234', '谷口さん');
+    $fake = new FakeInstagramClient();
+    $service = new InstagramService($config, $storage, $fake);
+
+    $prepared = $service->prepare(igPrepareBody(), $paired['deviceId']);
+    assertSame('谷口さん', $prepared['preparedBy'] ?? '');
+    $ready = $service->status($prepared['draftId'], $paired['deviceId']);
+    $published = $service->publish([
+        'draftId' => $ready['draftId'],
+        'publishRequestId' => 'pub-' . bin2hex(random_bytes(6)),
+        'confirmNonce' => $ready['confirmNonce'],
+        'imageHash' => $ready['imageHash'],
+        'captionHash' => $ready['captionHash'],
+    ], $paired['deviceId']);
+    assertSame('谷口さん', $published['preparedBy'] ?? '');
+    assertSame('谷口さん', $published['publishedBy'] ?? '');
 });
 
 test('prepareを何度繰り返しても公開されない', function (): void {

@@ -51,6 +51,16 @@ final class Config
         if (strlen((string) $loaded['pairing_code']) < 8) {
             throw new ConfigMissing('pairing_code は8文字以上にしてください');
         }
+        $adminPairingCode = $loaded['admin_pairing_code'] ?? '';
+        if (!is_string($adminPairingCode)) {
+            throw new ConfigMissing('admin_pairing_code の形式が正しくありません');
+        }
+        if ($adminPairingCode !== '' && strlen($adminPairingCode) < 8) {
+            throw new ConfigMissing('admin_pairing_code は8文字以上にしてください');
+        }
+        if ($adminPairingCode !== '' && hash_equals((string) $loaded['pairing_code'], $adminPairingCode)) {
+            throw new ConfigMissing('管理者用と投稿者用の合言葉は別々にしてください');
+        }
 
         return new self($loaded + self::defaults());
     }
@@ -59,6 +69,7 @@ final class Config
     public static function defaults(): array
     {
         return [
+            'admin_pairing_code' => '',
             'github_branch' => 'main',
             'storage_dir' => sys_get_temp_dir() . '/relagarden-api',
             'max_image_bytes' => 8 * 1024 * 1024,
