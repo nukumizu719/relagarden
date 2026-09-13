@@ -18,7 +18,10 @@ final class Storage
     public function __construct(string $dir)
     {
         $this->dir = rtrim($dir, '/');
-        foreach (['', '/devices', '/status', '/logs', '/rate', '/igdrafts', '/igtickets'] as $sub) {
+        foreach (
+            ['', '/devices', '/status', '/logs', '/rate', '/igdrafts', '/igtickets', '/igoauth', '/igconnection']
+            as $sub
+        ) {
             $path = $this->dir . $sub;
             if (!is_dir($path)) {
                 @mkdir($path, 0700, true);

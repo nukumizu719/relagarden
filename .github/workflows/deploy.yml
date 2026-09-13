@@ -218,7 +218,10 @@ jobs:
           IG_USER_ID: ${{ secrets.RELAGARDEN_INSTAGRAM_USER_ID }}
           IG_ACCOUNT_NAME: ${{ secrets.RELAGARDEN_INSTAGRAM_ACCOUNT_NAME }}
           IG_ACCESS_TOKEN: ${{ secrets.RELAGARDEN_INSTAGRAM_ACCESS_TOKEN }}
+          IG_APP_ID: ${{ secrets.RELAGARDEN_INSTAGRAM_APP_ID }}
+          IG_APP_SECRET: ${{ secrets.RELAGARDEN_INSTAGRAM_APP_SECRET }}
           IG_API_VERSION: ${{ vars.RELAGARDEN_INSTAGRAM_GRAPH_API_VERSION }}
+          IG_REDIRECT_URI: https://relagarden.jp/api/instagram/oauth/callback
         run: |
           set -eu
 
@@ -244,9 +247,21 @@ jobs:
 
           safe RELAGARDEN_API_PAIRING_CODE "$PAIRING_CODE" 16
 
-          ig=no
+          oauth=no
+          if [ -n "$IG_APP_ID" ] || [ -n "$IG_APP_SECRET" ]; then
+            if [ -z "$IG_APP_ID" ] || [ -z "$IG_APP_SECRET" ] || [ -z "$IG_API_VERSION" ]; then
+              echo "Instagram OAuth の設定が途中までしか入っていません" >&2
+              echo "  必要: APP_ID / APP_SECRET / GRAPH_API_VERSION" >&2
+              exit 1
+            fi
+            safe RELAGARDEN_INSTAGRAM_APP_ID "$IG_APP_ID" 5
+            safe RELAGARDEN_INSTAGRAM_APP_SECRET "$IG_APP_SECRET" 16
+            oauth=yes
+          fi
+
+          legacy=no
           if [ -n "$IG_USER_ID" ] || [ -n "$IG_ACCOUNT_NAME" ] \
-            || [ -n "$IG_ACCESS_TOKEN" ] || [ -n "$IG_API_VERSION" ]; then
+            || [ -n "$IG_ACCESS_TOKEN" ]; then
             if [ -z "$IG_USER_ID" ] || [ -z "$IG_ACCOUNT_NAME" ] \
               || [ -z "$IG_ACCESS_TOKEN" ] || [ -z "$IG_API_VERSION" ]; then
               echo "Instagram の設定が途中までしか入っていません" >&2
@@ -256,11 +271,14 @@ jobs:
             safe RELAGARDEN_INSTAGRAM_USER_ID "$IG_USER_ID" 8
             safe RELAGARDEN_INSTAGRAM_ACCOUNT_NAME "$IG_ACCOUNT_NAME" 1
             safe RELAGARDEN_INSTAGRAM_ACCESS_TOKEN "$IG_ACCESS_TOKEN" 32
+            legacy=yes
+          fi
+
+          if [ "$oauth" = yes ] || [ "$legacy" = yes ]; then
             case "$IG_API_VERSION" in
               v[0-9]*.[0-9]*) ;;
               *) echo "RELAGARDEN_INSTAGRAM_GRAPH_API_VERSION の形が違います（例 v23.0）" >&2; exit 1 ;;
             esac
-            ig=yes
           fi
 
           mkdir -p api-config-out
@@ -272,7 +290,13 @@ jobs:
             printf "    'pairing_code' => '%s',\n" "$PAIRING_CODE"
             printf "    'storage_dir' => '/home/xs674757/relagarden.jp/private/api-storage',\n"
             printf "    'site_base_url' => 'https://relagarden.jp',\n"
-            if [ "$ig" = yes ]; then
+            if [ "$oauth" = yes ]; then
+              printf "    'instagram_app_id' => '%s',\n" "$IG_APP_ID"
+              printf "    'instagram_app_secret' => '%s',\n" "$IG_APP_SECRET"
+              printf "    'instagram_redirect_uri' => '%s',\n" "$IG_REDIRECT_URI"
+              printf "    'instagram_graph_api_version' => '%s',\n" "$IG_API_VERSION"
+            fi
+            if [ "$legacy" = yes ]; then
               printf "    'instagram_user_id' => '%s',\n" "$IG_USER_ID"
               printf "    'instagram_account_name' => '%s',\n" "$IG_ACCOUNT_NAME"
               printf "    'instagram_graph_api_version' => '%s',\n" "$IG_API_VERSION"
@@ -282,7 +306,7 @@ jobs:
           } > api-config-out/config.php
           chmod 600 api-config-out/config.php
           echo "made=true" >> "$GITHUB_OUTPUT"
-          echo "config.php を作りました（内容は表示しません / Instagram設定=$ig）"
+          echo "config.php を作りました（内容は表示しません / OAuth設定=${oauth} / 旧方式=${legacy}）"
 
       - name: Deploy API config outside public_html
         if: steps.targets.outputs.api == 'true' && steps.apiconfig.outputs.made == 'true'

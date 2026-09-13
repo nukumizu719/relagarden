@@ -83,6 +83,8 @@ final class Config
             // 投稿先アカウントごとの上限。端末を替えても超えられない。
             'rate_max_instagram_account_prepares' => 3,
             'rate_max_instagram_account_publishes' => 3,
+            'rate_max_instagram_oauth_starts' => 5,
+            'instagram_oauth_state_ttl_seconds' => 600,
         ];
     }
 
@@ -125,6 +127,12 @@ final class Config
     public function raw(): array
     {
         return $this->values;
+    }
+
+    /** 秘密の設定全体を外へ出さず、実行時の値だけを重ねた設定を作る。 */
+    public function with(array $overrides): self
+    {
+        return new self($overrides + $this->values);
     }
 }
 
