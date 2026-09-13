@@ -34,6 +34,9 @@ require $sourceDir . '/PublishService.php';
 require $sourceDir . '/InstagramClient.php';
 require $sourceDir . '/FakeInstagramClient.php';
 require $sourceDir . '/CurlInstagramClient.php';
+require $sourceDir . '/InstagramOAuthClient.php';
+require $sourceDir . '/CurlInstagramOAuthClient.php';
+require $sourceDir . '/InstagramOAuthService.php';
 require $sourceDir . '/InstagramService.php';
 require $sourceDir . '/InstagramRouter.php';
 require $sourceDir . '/Router.php';
@@ -41,7 +44,9 @@ require $sourceDir . '/Router.php';
 use Relagarden\Api\Config;
 use Relagarden\Api\ConfigMissing;
 use Relagarden\Api\CurlInstagramClient;
+use Relagarden\Api\CurlInstagramOAuthClient;
 use Relagarden\Api\GitHubApiClient;
+use Relagarden\Api\InstagramOAuthService;
 use Relagarden\Api\InstagramService;
 use Relagarden\Api\Router;
 use Relagarden\Api\Storage;
@@ -85,7 +90,18 @@ if ($config->hasGitHub()) {
     );
 }
 
-// Instagram連携。設定が入っていないときは組み立てない（入口は503を返す）。
+// OAuthトークンはpublic_html外の保存領域から読む。Macへは返さない。
+$oauthClient = new CurlInstagramOAuthClient($storage);
+$connection = InstagramOAuthService::activeConnection($storage);
+if ($connection !== null) {
+    $config = $config->with([
+        'instagram_access_token' => (string) ($connection['accessToken'] ?? ''),
+        'instagram_user_id' => (string) ($connection['userId'] ?? ''),
+        'instagram_account_name' => (string) ($connection['username'] ?? ''),
+    ]);
+}
+
+// 移行期間だけ、従来の手入力トークン設定も利用可能にする。
 $instagram = null;
 if (InstagramService::isConfigured($config) && $config->str('instagram_access_token') !== '') {
     $instagram = new CurlInstagramClient(
@@ -122,7 +138,7 @@ foreach ($_SERVER as $key => $value) {
     }
 }
 
-$router = new Router($config, $storage, $github, $instagram);
+$router = new Router($config, $storage, $github, $instagram, $oauthClient);
 [$status, $payload] = $router->handle(
     (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'),
     $path,
@@ -132,4 +148,19 @@ $router = new Router($config, $storage, $github, $instagram);
 );
 
 http_response_code($status);
+if ($path === '/instagram/oauth/callback') {
+    header('Content-Type: text/html; charset=utf-8');
+    $ok = $status >= 200 && $status < 300 && ($payload['ok'] ?? false) === true;
+    $title = $ok ? 'Instagram連携が完了しました' : 'Instagram連携を完了できませんでした';
+    $message = $ok
+        ? 'この画面を閉じて、リラガーデンOSへ戻ってください。'
+        : (string) ($payload['message'] ?? 'アプリへ戻り、最初からやり直してください。');
+    echo '<!doctype html><html lang="ja"><meta charset="utf-8">'
+        . '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        . '<title>' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</title>'
+        . '<body style="font-family:-apple-system,sans-serif;padding:32px;line-height:1.7">'
+        . '<h1>' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</h1>'
+        . '<p>' . htmlspecialchars($message, ENT_QUOTES, 'UTF-8') . '</p></body></html>';
+    exit;
+}
 echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);

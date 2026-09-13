@@ -60,9 +60,18 @@ return [
     // **ここに書く値は、この見本ファイルには絶対に入れない。**
     // 本物は public_html の外の config.php にだけ書く。
     //
-    // 長期アクセストークン。Instagram Login で発行したもの。
-    // 60日で切れる。切れたら差し替える。
-    // GitHubのPAT・Xserverの管理パスワードとは必ず別物。
+    // Meta開発者画面のInstagram App ID。
+    'instagram_app_id' => '',
+
+    // Meta開発者画面のApp Secret。Macアプリ・GitHub・公開領域へ置かない。
+    'instagram_app_secret' => '',
+
+    // Meta開発者画面にも同じ文字列を登録するコールバックURL。
+    // 例: 'https://relagarden.jp/api/instagram/oauth/callback'
+    'instagram_redirect_uri' => '',
+
+    // 旧方式からの安全な移行用。新規連携では空のままにし、OAuth後に
+    // public_html外へ自動保存された長期トークンを使う。
     'instagram_access_token' => '',
 
     // Instagramのユーザー番号（数字）。@から始まる名前ではない。
@@ -78,8 +87,9 @@ return [
     // 例: 'your_instagram_name'（本物はここではなく config.php へ書く）
     'instagram_account_name' => '',
 
-    // App Secret。**今回の投稿実験では使わない。** 将来用の空欄。
-    'instagram_app_secret' => '',
+    // OAuth stateの有効期間と、1端末あたりの開始回数。
+    'instagram_oauth_state_ttl_seconds' => 600,
+    'rate_max_instagram_oauth_starts' => 5,
 
     // 1枚あたりの画像サイズ（バイト）
     'instagram_max_image_bytes' => 8 * 1024 * 1024,

@@ -23,6 +23,9 @@ require __DIR__ . '/../src/FakeGitHubClient.php';
 require __DIR__ . '/../src/PublishService.php';
 require __DIR__ . '/../src/InstagramClient.php';
 require __DIR__ . '/../src/FakeInstagramClient.php';
+require __DIR__ . '/../src/InstagramOAuthClient.php';
+require __DIR__ . '/../src/FakeInstagramOAuthClient.php';
+require __DIR__ . '/../src/InstagramOAuthService.php';
 require __DIR__ . '/../src/InstagramService.php';
 require __DIR__ . '/../src/InstagramRouter.php';
 require __DIR__ . '/../src/Router.php';
@@ -33,6 +36,8 @@ use Relagarden\Api\CaseMarkdown;
 use Relagarden\Api\Config;
 use Relagarden\Api\FakeGitHubClient;
 use Relagarden\Api\FakeInstagramClient;
+use Relagarden\Api\FakeInstagramOAuthClient;
+use Relagarden\Api\InstagramOAuthService;
 use Relagarden\Api\InstagramService;
 use Relagarden\Api\PublishService;
 use Relagarden\Api\RateLimiter;
@@ -163,6 +168,93 @@ function validPayload(string $slug = 'case-20260825-1430'): array
         'consent' => true,
     ];
 }
+
+group('Instagram：OAuthはXserver内だけで完了する');
+
+/** @return array{Config,Storage,Router,FakeInstagramOAuthClient,string} */
+function igOAuthWorkspace(): array
+{
+    $dir = sys_get_temp_dir() . '/relagarden-ig-oauth-' . bin2hex(random_bytes(6));
+    $config = new Config([
+        'pairing_code' => 'pairing-code-1234',
+        'storage_dir' => $dir,
+        'instagram_app_id' => '1234567890',
+        'instagram_app_secret' => 'APP_SECRET_MUST_NOT_LEAK',
+        'instagram_redirect_uri' => 'https://relagarden.jp/api/instagram/oauth/callback',
+        'instagram_graph_api_version' => 'v0.0-test',
+    ] + Config::defaults());
+    $storage = new Storage($dir);
+    $oauth = new FakeInstagramOAuthClient();
+    $router = new Router($config, $storage, new FakeGitHubClient(), null, $oauth);
+    [, $paired] = $router->handle('POST', '/pairing', json_encode([
+        'pairingCode' => 'pairing-code-1234',
+        'deviceName' => 'Mac',
+    ]), [], '203.0.113.1');
+    return [$config, $storage, $router, $oauth, 'Bearer ' . $paired['token']];
+}
+
+test('開始URLは必要最小限の2権限とstateを持つ', function (): void {
+    [, , $router, , $token] = igOAuthWorkspace();
+    [$status, $payload] = $router->handle('POST', '/instagram/oauth/start', '', ['authorization' => $token], '203.0.113.1');
+    assertSame(200, $status);
+    $url = (string) ($payload['authorizationUrl'] ?? '');
+    parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+    assertSame('instagram_business_basic,instagram_business_content_publish', $query['scope'] ?? '');
+    assertSame(64, strlen((string) ($query['state'] ?? '')));
+    assertTrue(!str_contains($url, 'APP_SECRET_MUST_NOT_LEAK'), 'App SecretがURLへ出た');
+});
+
+test('認証完了後も応答へApp Secretとアクセストークンを返さない', function (): void {
+    [, $storage, $router, $oauth, $token] = igOAuthWorkspace();
+    [, $start] = $router->handle('POST', '/instagram/oauth/start', '', ['authorization' => $token], '203.0.113.1');
+    parse_str((string) parse_url((string) $start['authorizationUrl'], PHP_URL_QUERY), $query);
+    $_GET = ['state' => (string) $query['state'], 'code' => 'AUTH_CODE_TEST'];
+    [$status, $payload] = $router->handle('GET', '/instagram/oauth/callback', '', [], '203.0.113.1');
+    $_GET = [];
+    assertSame(200, $status);
+    assertSame(true, $payload['connected'] ?? false);
+    assertSame('relagarden_test', $payload['accountName'] ?? '');
+    assertSame(1, $oauth->exchangeCalls);
+    $encoded = json_encode($payload);
+    assertTrue(!str_contains((string) $encoded, 'APP_SECRET_MUST_NOT_LEAK'));
+    assertTrue(!str_contains((string) $encoded, 'IG_LONG_TEST_TOKEN'));
+    $saved = InstagramOAuthService::activeConnection($storage);
+    assertSame('IG_LONG_TEST_TOKEN_1234567890', $saved['accessToken'] ?? '');
+});
+
+test('同じstateとcodeは二度使えない', function (): void {
+    [, , $router, $oauth, $token] = igOAuthWorkspace();
+    [, $start] = $router->handle('POST', '/instagram/oauth/start', '', ['authorization' => $token], '203.0.113.1');
+    parse_str((string) parse_url((string) $start['authorizationUrl'], PHP_URL_QUERY), $query);
+    $_GET = ['state' => (string) $query['state'], 'code' => 'AUTH_CODE_TEST'];
+    [$first] = $router->handle('GET', '/instagram/oauth/callback', '', [], '203.0.113.1');
+    [$second] = $router->handle('GET', '/instagram/oauth/callback', '', [], '203.0.113.1');
+    $_GET = [];
+    assertSame(200, $first);
+    assertSame(400, $second);
+    assertSame(1, $oauth->exchangeCalls);
+});
+
+test('接続確認・更新・解除は端末認証が必要', function (): void {
+    [, , $router, $oauth, $token] = igOAuthWorkspace();
+    [, $start] = $router->handle('POST', '/instagram/oauth/start', '', ['authorization' => $token], '203.0.113.1');
+    parse_str((string) parse_url((string) $start['authorizationUrl'], PHP_URL_QUERY), $query);
+    $_GET = ['state' => (string) $query['state'], 'code' => 'AUTH_CODE_TEST'];
+    $router->handle('GET', '/instagram/oauth/callback', '', [], '203.0.113.1');
+    $_GET = [];
+    [$unauthorized] = $router->handle('GET', '/instagram/account', '', [], '203.0.113.1');
+    [$account, $accountPayload] = $router->handle('GET', '/instagram/account', '', ['authorization' => $token], '203.0.113.1');
+    [$refresh] = $router->handle('POST', '/instagram/oauth/refresh', '', ['authorization' => $token], '203.0.113.1');
+    [$disconnect] = $router->handle('POST', '/instagram/disconnect', '', ['authorization' => $token], '203.0.113.1');
+    [, $afterPayload] = $router->handle('GET', '/instagram/account', '', ['authorization' => $token], '203.0.113.1');
+    assertSame(401, $unauthorized);
+    assertSame(200, $account);
+    assertSame(true, $accountPayload['connected'] ?? false);
+    assertSame(200, $refresh);
+    assertSame(1, $oauth->refreshCalls);
+    assertSame(200, $disconnect);
+    assertSame(false, $afterPayload['connected'] ?? true);
+});
 
 // ══════════════════════════════════════════════════════════
 group('入力の検証');

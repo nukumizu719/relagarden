@@ -17,7 +17,8 @@ final class InstagramRouter
     public function __construct(
         private readonly Config $config,
         private readonly Storage $storage,
-        private readonly InstagramClient $client,
+        private readonly ?InstagramClient $client,
+        private readonly ?InstagramOAuthClient $oauthClient = null,
     ) {
     }
 
@@ -42,10 +43,56 @@ final class InstagramRouter
     ): array {
         $auth = new Auth($this->config, $this->storage);
         $limiter = new RateLimiter($this->storage, $this->config->int('rate_window_seconds'));
-        $service = new InstagramService($this->config, $this->storage, $this->client);
-
         $tail = substr($route, strlen('/instagram'));
         $tail = '/' . trim($tail, '/');
+
+        if ($tail === '/oauth/callback') {
+            $this->requireMethod($method, 'GET');
+            $result = $this->oauthService()->complete($query['state'] ?? '', $query['code'] ?? '');
+            return [200, ['ok' => true, 'message' => 'Instagram連携が完了しました。アプリへ戻ってください。'] + $result];
+        }
+
+        if ($tail === '/oauth/start') {
+            $this->requireMethod($method, 'POST');
+            $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $limiter->hit(
+                'igoauth_' . $deviceId,
+                $this->config->int('rate_max_instagram_oauth_starts'),
+                '連携操作が続いています。しばらく時間をおいてください'
+            );
+            return [200, ['ok' => true] + $this->oauthService()->start($deviceId)];
+        }
+
+        if ($tail === '/oauth/refresh') {
+            $this->requireMethod($method, 'POST');
+            $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            return [200, ['ok' => true] + $this->oauthService()->refresh($deviceId)];
+        }
+
+        if ($tail === '/disconnect') {
+            $this->requireMethod($method, 'POST');
+            $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $this->oauthService()->disconnect($deviceId);
+            return [200, ['ok' => true, 'connected' => false]];
+        }
+
+        if ($tail === '/account') {
+            $this->requireMethod($method, 'GET');
+            $auth->requireDevice($headers['authorization'] ?? null);
+            if ($this->oauthClient !== null) {
+                return [200, ['ok' => true] + $this->oauthService()->status()];
+            }
+            $ready = $this->client !== null && InstagramService::isConfigured($this->config);
+            return [200, [
+                'ok' => true,
+                'configured' => $ready,
+                'connected' => $ready,
+                'accountName' => $ready ? $this->service()->accountName() : '',
+                'expiresAt' => '',
+            ]];
+        }
+
+        $service = $this->service();
 
         if ($tail === '/prepare') {
             $this->requireMethod($method, 'POST');
@@ -104,19 +151,23 @@ final class InstagramRouter
             return [200, ['ok' => true] + $service->discard($this->json($rawBody), $deviceId)];
         }
 
-        // 接続の状態だけを見る。下書きは作らない。
-        if ($tail === '/account') {
-            $this->requireMethod($method, 'GET');
-            $auth->requireDevice($headers['authorization'] ?? null);
-            $ready = InstagramService::isConfigured($this->config);
-            return [200, [
-                'ok' => true,
-                'configured' => $ready,
-                'accountName' => $ready ? $service->accountName() : '',
-            ]];
-        }
-
         return [404, ['ok' => false, 'message' => '入口が見つかりません']];
+    }
+
+    private function service(): InstagramService
+    {
+        if ($this->client === null) {
+            throw new ApiError(503, 'Instagramはまだ連携されていません');
+        }
+        return new InstagramService($this->config, $this->storage, $this->client);
+    }
+
+    private function oauthService(): InstagramOAuthService
+    {
+        if ($this->oauthClient === null) {
+            throw new ApiError(503, 'Instagram連携はまだ設定されていません');
+        }
+        return new InstagramOAuthService($this->config, $this->storage, $this->oauthClient);
     }
 
     private function requireMethod(string $actual, string $expected): void

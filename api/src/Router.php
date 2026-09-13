@@ -19,6 +19,8 @@ final class Router
         private readonly ?GitHubClient $github,
         /** Instagram実験用。使わない構成では null のままでよい。 */
         private readonly ?InstagramClient $instagram = null,
+        /** Instagram OAuth用。App Secretとトークンはサーバー内だけで扱う。 */
+        private readonly ?InstagramOAuthClient $instagramOAuth = null,
     ) {
     }
 
@@ -37,16 +39,18 @@ final class Router
             // Instagram実験の入口だけ、別のところへ渡す。
             // 掲載・LINEの処理はここから先へ入ってこない。
             if (InstagramRouter::handles($route)) {
-                if ($this->instagram === null) {
-                    throw new ApiError(503, 'Instagram連携はまだ設定されていません');
-                }
                 $query = [];
                 foreach ($_GET as $key => $value) {
                     if (is_string($key) && is_string($value)) {
                         $query[$key] = $value;
                     }
                 }
-                $sub = new InstagramRouter($this->config, $this->storage, $this->instagram);
+                $sub = new InstagramRouter(
+                    $this->config,
+                    $this->storage,
+                    $this->instagram,
+                    $this->instagramOAuth,
+                );
                 return $sub->handle($method, $route, $rawBody, $headers, $clientIp, $query);
             }
 
