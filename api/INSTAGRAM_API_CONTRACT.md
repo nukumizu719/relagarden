@@ -34,3 +34,16 @@ Macアプリが保持する秘密は、既存のXserver端末トークンだけ�
 - MacからMeta Graph APIへの直接通信
 
 これらを削除する前に、Xserver側の接続APIが本番で利用可能であることを確認してください。
+
+## 本番の設定名
+
+GitHub Actionsの暗号化Secretsに次を登録します。値はコード、PR、ログへ書きません。
+
+- `RELAGARDEN_INSTAGRAM_APP_ID`
+- `RELAGARDEN_INSTAGRAM_APP_SECRET`
+
+Repository VariablesにはMeta画面で確認した現行値を登録します。
+
+- `RELAGARDEN_INSTAGRAM_GRAPH_API_VERSION`
+
+リダイレクトURIは `https://relagarden.jp/api/instagram/oauth/callback` に固定し、Meta開発者画面へ同じ文字列を登録します。
