@@ -220,6 +220,13 @@ test('開始URLは必要最小限の2権限とstateを持つ', function (): void
     assertTrue(!str_contains($url, 'APP_SECRET_MUST_NOT_LEAK'), 'App SecretがURLへ出た');
 });
 
+test('プロフィール確認はMeta仕様のidとusernameを取得する', function (): void {
+    $source = (string) file_get_contents(__DIR__ . '/../src/CurlInstagramOAuthClient.php');
+    assertTrue(str_contains($source, '?fields=id,username'), 'プロフィール取得項目がMeta仕様と違う');
+    assertTrue(str_contains($source, "requiredString(\$result, 'id')"), '投稿先IDをidから読んでいない');
+    assertTrue(!str_contains($source, '?fields=user_id,username'), '廃止したuser_id取得が残っている');
+});
+
 test('認証完了後も応答へApp Secretとアクセストークンを返さない', function (): void {
     [, $storage, $router, $oauth, $token] = igOAuthWorkspace();
     [, $start] = $router->handle('POST', '/instagram/oauth/start', '', ['authorization' => $token], '203.0.113.1');
