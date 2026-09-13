@@ -831,6 +831,18 @@ test('管理者用と投稿者用の合言葉が同じなら断る', function ()
     }
 });
 
+test('本番APIはサイト直下のprivate設定を読む', function (): void {
+    $source = (string) file_get_contents(__DIR__ . '/../public/index.php');
+    assertTrue(
+        str_contains($source, "dirname(__DIR__, 2) . '/private/config.php'"),
+        'public_html/api から relagarden.jp/private を参照する'
+    );
+    assertTrue(
+        !str_contains($source, "dirname(__DIR__, 3) . '/private/config.php'"),
+        'サーバー利用者ホーム直下を参照しない'
+    );
+});
+
 
 // ══════════════════════════════════════════════════════════
 // Instagram実験

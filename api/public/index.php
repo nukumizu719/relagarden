@@ -60,7 +60,7 @@ header('Access-Control-Allow-Origin: null');
 // 設定ファイルの場所。public_html の外を指す。
 // 置き場所を変える場合はここだけ直す。
 $configPath = getenv('RELAGARDEN_API_CONFIG')
-    ?: dirname(__DIR__, 3) . '/private/config.php';
+    ?: dirname(__DIR__, 2) . '/private/config.php';
 
 try {
     $config = Config::load($configPath);
