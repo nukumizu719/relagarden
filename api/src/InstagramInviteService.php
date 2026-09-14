@@ -50,6 +50,41 @@ final class InstagramInviteService
         ];
     }
 
+    /**
+     * QRを使わず、この端末自身の独立した利用先を用意する。
+     * 通信が不明なまま再試行されても、既に移動済みなら同じ利用先を返す。
+     *
+     * @return array{workspaceName:string,canManageInstagram:bool}
+     */
+    public function createForCurrentDevice(string $workspaceName, string $deviceId): array
+    {
+        $currentTenantId = $this->auth->tenantId($deviceId);
+        if ($currentTenantId !== 'legacy' || $this->auth->isAdmin($deviceId)) {
+            return [
+                'workspaceName' => $this->workspaceName($currentTenantId),
+                'canManageInstagram' => $this->auth->isAdmin($deviceId),
+            ];
+        }
+
+        $workspaceName = trim($workspaceName);
+        if ($workspaceName === '' || mb_strlen($workspaceName) > 40) {
+            throw new ApiError(400, '利用者名は40文字以内で入れてください');
+        }
+        $tenantId = 'tenant-' . bin2hex(random_bytes(8));
+        $this->storage->put(self::TENANTS, $tenantId, [
+            'name' => $workspaceName,
+            'createdAt' => time(),
+            'createdByDeviceIdHash' => substr(hash('sha256', $deviceId), 0, 16),
+        ]);
+        $this->auth->moveToTenantAsAdmin($deviceId, $tenantId);
+        $this->storage->log('instagram workspace: created for current device tenant=' . $tenantId);
+
+        return [
+            'workspaceName' => $workspaceName,
+            'canManageInstagram' => true,
+        ];
+    }
+
     /** @return array{token:string,deviceId:string,role:string,tenantId:string,workspaceName:string} */
     public function claim(string $rawToken, string $deviceName): array
     {

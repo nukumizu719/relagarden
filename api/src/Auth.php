@@ -152,6 +152,24 @@ final class Auth
         return $tenantId !== '' ? $tenantId : 'legacy';
     }
 
+    /** 現在の端末トークンを保ったまま、独立した利用先の管理端末へ移す。 */
+    public function moveToTenantAsAdmin(string $deviceId, string $tenantId): void
+    {
+        $record = $this->storage->get('devices', $deviceId);
+        if ($record === null) {
+            throw new ApiError(401, 'ホームページとの連携が切れています');
+        }
+        $tenantId = Storage::safeKey($tenantId);
+        if ($tenantId === '') {
+            throw new ApiError(400, '利用先を確認できません');
+        }
+        $record['tenantId'] = $tenantId;
+        $record['role'] = 'admin';
+        $record['workspaceChangedAt'] = gmdate('c');
+        $this->storage->put('devices', $deviceId, $record);
+        $this->storage->log(sprintf('moved device=%s tenant=%s role=admin', $deviceId, $tenantId));
+    }
+
     public function isAdmin(string $deviceId): bool
     {
         $record = $this->storage->get('devices', $deviceId);
