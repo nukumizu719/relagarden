@@ -26,6 +26,7 @@ require __DIR__ . '/../src/FakeInstagramClient.php';
 require __DIR__ . '/../src/InstagramOAuthClient.php';
 require __DIR__ . '/../src/FakeInstagramOAuthClient.php';
 require __DIR__ . '/../src/InstagramOAuthService.php';
+require __DIR__ . '/../src/InstagramInviteService.php';
 require __DIR__ . '/../src/InstagramService.php';
 require __DIR__ . '/../src/InstagramRouter.php';
 require __DIR__ . '/../src/Router.php';
@@ -280,6 +281,84 @@ test('接続確認・更新・解除は端末認証が必要', function (): void
 });
 
 // ══════════════════════════════════════════════════════════
+group('Instagram：招待QRと利用者別の投稿先');
+
+test('招待QRは一度だけ使え、受取端末を新しい利用者領域へ固定する', function (): void {
+    [, , $router, , $legacyToken] = igOAuthWorkspace();
+    [$createStatus, $created] = $router->handle(
+        'POST',
+        '/instagram/invites',
+        json_encode(['workspaceName' => '谷口さんのリラガーデン']),
+        ['authorization' => $legacyToken],
+        '203.0.113.20'
+    );
+    assertSame(200, $createStatus);
+    $uri = (string) ($created['inviteUri'] ?? '');
+    parse_str((string) parse_url($uri, PHP_URL_QUERY), $inviteQuery);
+    $inviteToken = (string) ($inviteQuery['token'] ?? '');
+    assertSame(64, strlen($inviteToken));
+
+    [$claimStatus, $claimed] = $router->handle(
+        'POST',
+        '/instagram/invites/claim',
+        json_encode(['inviteToken' => $inviteToken, 'deviceName' => '谷口さんのiPhone']),
+        [],
+        '203.0.113.21'
+    );
+    assertSame(200, $claimStatus);
+    assertSame('admin', $claimed['role'] ?? '');
+    assertSame('谷口さんのリラガーデン', $claimed['workspaceName'] ?? '');
+    assertTrue(is_string($claimed['token'] ?? null) && str_contains($claimed['token'], '.'));
+
+    [$againStatus] = $router->handle(
+        'POST',
+        '/instagram/invites/claim',
+        json_encode(['inviteToken' => $inviteToken, 'deviceName' => '別のiPhone']),
+        [],
+        '203.0.113.22'
+    );
+    assertSame(409, $againStatus);
+});
+
+test('招待された利用者のInstagram連携は従来利用者へ漏れない', function (): void {
+    [, , $router, , $legacyToken] = igOAuthWorkspace();
+    [, $created] = $router->handle(
+        'POST',
+        '/instagram/invites',
+        json_encode(['workspaceName' => '谷口さん']),
+        ['authorization' => $legacyToken],
+        '203.0.113.30'
+    );
+    parse_str((string) parse_url((string) $created['inviteUri'], PHP_URL_QUERY), $inviteQuery);
+    [, $claimed] = $router->handle(
+        'POST',
+        '/instagram/invites/claim',
+        json_encode(['inviteToken' => (string) $inviteQuery['token'], 'deviceName' => '谷口さんのiPhone']),
+        [],
+        '203.0.113.31'
+    );
+    $tenantToken = 'Bearer ' . (string) $claimed['token'];
+
+    [, $start] = $router->handle(
+        'POST', '/instagram/oauth/start', '', ['authorization' => $tenantToken], '203.0.113.31'
+    );
+    parse_str((string) parse_url((string) $start['authorizationUrl'], PHP_URL_QUERY), $oauthQuery);
+    $_GET = ['state' => (string) $oauthQuery['state'], 'code' => 'AUTH_CODE_TENANT'];
+    [$callbackStatus] = $router->handle('GET', '/instagram/oauth/callback', '', [], '203.0.113.31');
+    $_GET = [];
+    assertSame(200, $callbackStatus);
+
+    [, $tenantAccount] = $router->handle(
+        'GET', '/instagram/account', '', ['authorization' => $tenantToken], '203.0.113.31'
+    );
+    [, $legacyAccount] = $router->handle(
+        'GET', '/instagram/account', '', ['authorization' => $legacyToken], '203.0.113.30'
+    );
+    assertSame(true, $tenantAccount['connected'] ?? false);
+    assertSame('谷口さん', $tenantAccount['workspaceName'] ?? '');
+    assertSame(false, $legacyAccount['connected'] ?? true);
+});
+
 group('入力の検証');
 
 test('記事の名前は決めた形だけ通す', function (): void {

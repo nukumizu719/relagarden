@@ -37,16 +37,15 @@ require $sourceDir . '/CurlInstagramClient.php';
 require $sourceDir . '/InstagramOAuthClient.php';
 require $sourceDir . '/CurlInstagramOAuthClient.php';
 require $sourceDir . '/InstagramOAuthService.php';
+require $sourceDir . '/InstagramInviteService.php';
 require $sourceDir . '/InstagramService.php';
 require $sourceDir . '/InstagramRouter.php';
 require $sourceDir . '/Router.php';
 
 use Relagarden\Api\Config;
 use Relagarden\Api\ConfigMissing;
-use Relagarden\Api\CurlInstagramClient;
 use Relagarden\Api\CurlInstagramOAuthClient;
 use Relagarden\Api\GitHubApiClient;
-use Relagarden\Api\InstagramOAuthService;
 use Relagarden\Api\InstagramService;
 use Relagarden\Api\Router;
 use Relagarden\Api\Storage;
@@ -90,27 +89,9 @@ if ($config->hasGitHub()) {
     );
 }
 
-// OAuthトークンはpublic_html外の保存領域から読む。Macへは返さない。
+// OAuthトークンはpublic_html外の利用者別領域から、各リクエスト時に読む。
 $oauthClient = new CurlInstagramOAuthClient($storage);
-$connection = InstagramOAuthService::activeConnection($storage);
-if ($connection !== null) {
-    $config = $config->with([
-        'instagram_access_token' => (string) ($connection['accessToken'] ?? ''),
-        'instagram_user_id' => (string) ($connection['userId'] ?? ''),
-        'instagram_account_name' => (string) ($connection['username'] ?? ''),
-    ]);
-}
-
-// 移行期間だけ、従来の手入力トークン設定も利用可能にする。
 $instagram = null;
-if (InstagramService::isConfigured($config) && $config->str('instagram_access_token') !== '') {
-    $instagram = new CurlInstagramClient(
-        $config->str('instagram_access_token'),
-        $config->str('instagram_user_id'),
-        $config->str('instagram_graph_api_version'),
-        $storage,
-    );
-}
 
 $path = (string) parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 // public_html/api/ の下に置く前提で、先頭の /api を落とす

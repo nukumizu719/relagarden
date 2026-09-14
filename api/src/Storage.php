@@ -19,7 +19,10 @@ final class Storage
     {
         $this->dir = rtrim($dir, '/');
         foreach (
-            ['', '/devices', '/status', '/logs', '/rate', '/igdrafts', '/igtickets', '/igoauth', '/igconnection']
+            [
+                '', '/devices', '/status', '/logs', '/rate', '/igdrafts', '/igtickets',
+                '/igoauth', '/igconnection', '/iginvites', '/igtenants',
+            ]
             as $sub
         ) {
             $path = $this->dir . $sub;
@@ -86,6 +89,41 @@ final class Storage
     {
         $path = $this->pathFor($bucket, $key);
         return $path !== null && is_file($path);
+    }
+
+    /**
+     * `used=false` の記録を、排他ロックの中で一度だけ使用済みにする。
+     * 同じ招待を二台が同時に読んでも、片方だけが受け取れる。
+     *
+     * @return array<string,mixed>|null
+     */
+    public function consumeUnused(string $bucket, string $key): ?array
+    {
+        $path = $this->pathFor($bucket, $key);
+        if ($path === null) {
+            return null;
+        }
+        $lock = @fopen($path . '.lock', 'c');
+        if ($lock === false || !flock($lock, LOCK_EX)) {
+            if (is_resource($lock)) {
+                fclose($lock);
+            }
+            return null;
+        }
+        @chmod($path . '.lock', 0600);
+        try {
+            $record = $this->get($bucket, $key);
+            if ($record === null || ($record['used'] ?? true) === true) {
+                return null;
+            }
+            $record['used'] = true;
+            $record['usedAt'] = time();
+            $this->put($bucket, $key, $record);
+            return $record;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 
     /**
