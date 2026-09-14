@@ -9,7 +9,7 @@ final class InstagramOAuthService
 {
     private const STATE_BUCKET = 'igoauth';
     private const CONNECTION_BUCKET = 'igconnection';
-    private const ACTIVE = 'active';
+    private const LEGACY_CONNECTION = 'active';
 
     public function __construct(
         private readonly Config $config,
@@ -19,7 +19,7 @@ final class InstagramOAuthService
     }
 
     /** @return array{authorizationUrl:string,expiresAt:string} */
-    public function start(string $deviceId): array
+    public function start(string $deviceId, string $tenantId = 'legacy'): array
     {
         $this->requireSettings();
         $state = bin2hex(random_bytes(32));
@@ -27,6 +27,7 @@ final class InstagramOAuthService
         $expires = time() + $ttl;
         $this->storage->put(self::STATE_BUCKET, $state, [
             'deviceId' => $deviceId,
+            'tenantId' => $this->connectionKey($tenantId),
             'expiresAt' => $expires,
             'used' => false,
         ]);
@@ -69,7 +70,10 @@ final class InstagramOAuthService
             throw new ApiError(502, 'Instagramの投稿先を確認できませんでした');
         }
         $expires = time() + $long['expiresIn'];
-        $this->storage->put(self::CONNECTION_BUCKET, self::ACTIVE, [
+        $tenantId = is_string($saved['tenantId'] ?? null)
+            ? $this->connectionKey($saved['tenantId'])
+            : self::LEGACY_CONNECTION;
+        $this->storage->put(self::CONNECTION_BUCKET, $tenantId, [
             'accessToken' => $long['accessToken'],
             'userId' => $profile['userId'],
             'username' => $profile['username'],
@@ -83,9 +87,9 @@ final class InstagramOAuthService
     }
 
     /** @return array{configured:bool,connected:bool,accountName:string,expiresAt:string} */
-    public function status(): array
+    public function status(string $tenantId = 'legacy'): array
     {
-        $record = self::activeConnection($this->storage);
+        $record = self::activeConnection($this->storage, $tenantId);
         $expires = (int) ($record['expiresAt'] ?? 0);
         return [
             'configured' => $this->settingsReady(),
@@ -96,9 +100,9 @@ final class InstagramOAuthService
     }
 
     /** @return array{connected:bool,accountName:string,expiresAt:string} */
-    public function refresh(string $deviceId): array
+    public function refresh(string $deviceId, string $tenantId = 'legacy'): array
     {
-        $record = self::activeConnection($this->storage);
+        $record = self::activeConnection($this->storage, $tenantId);
         if ($record === null || (string) ($record['accessToken'] ?? '') === '') {
             throw new ApiError(409, 'Instagramはまだ連携されていません');
         }
@@ -107,7 +111,7 @@ final class InstagramOAuthService
         $record['expiresAt'] = time() + $renewed['expiresIn'];
         $record['refreshedAt'] = time();
         $record['refreshedByDeviceId'] = $deviceId;
-        $this->storage->put(self::CONNECTION_BUCKET, self::ACTIVE, $record);
+        $this->storage->put(self::CONNECTION_BUCKET, $this->connectionKey($tenantId), $record);
         return [
             'connected' => true,
             'accountName' => (string) ($record['username'] ?? ''),
@@ -115,20 +119,30 @@ final class InstagramOAuthService
         ];
     }
 
-    public function disconnect(string $deviceId): void
+    public function disconnect(string $deviceId, string $tenantId = 'legacy'): void
     {
-        $this->storage->delete(self::CONNECTION_BUCKET, self::ACTIVE);
+        $this->storage->delete(self::CONNECTION_BUCKET, $this->connectionKey($tenantId));
         $this->storage->log('instagram oauth: disconnected by device=' . substr(hash('sha256', $deviceId), 0, 12));
     }
 
     /** @return array<string,mixed>|null */
-    public static function activeConnection(Storage $storage): ?array
+    public static function activeConnection(Storage $storage, string $tenantId = 'legacy'): ?array
     {
-        $record = $storage->get(self::CONNECTION_BUCKET, self::ACTIVE);
+        $key = $tenantId === 'legacy' ? self::LEGACY_CONNECTION : Storage::safeKey($tenantId);
+        $record = $storage->get(self::CONNECTION_BUCKET, $key);
         if ($record === null || (int) ($record['expiresAt'] ?? 0) <= time()) {
             return null;
         }
         return $record;
+    }
+
+    private function connectionKey(string $tenantId): string
+    {
+        $key = $tenantId === 'legacy' ? self::LEGACY_CONNECTION : Storage::safeKey($tenantId);
+        if ($key === '') {
+            throw new ApiError(400, 'Instagramの利用先を確認できません');
+        }
+        return $key;
     }
 
     private function settingsReady(): bool

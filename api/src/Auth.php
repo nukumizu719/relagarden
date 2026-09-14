@@ -43,20 +43,46 @@ final class Auth
         // 管理コード未設定の既存環境だけは、従来コードを管理者として扱う。
         $role = $isAdmin || $adminCode === '' ? 'admin' : 'poster';
 
+        return $this->issueDevice($deviceName, $role, 'legacy');
+    }
+
+    /**
+     * 招待を受けた端末へ、この端末だけの鍵を発行する。
+     *
+     * @return array{token:string,deviceId:string,role:string,tenantId:string}
+     */
+    public function issueDevice(
+        string $deviceName,
+        string $role,
+        string $tenantId,
+    ): array {
+        if (!in_array($role, ['admin', 'poster'], true)) {
+            throw new ApiError(400, '端末の権限を確認できません');
+        }
+        $tenantId = Storage::safeKey($tenantId);
+        if ($tenantId === '') {
+            throw new ApiError(400, '利用先を確認できません');
+        }
+
         $deviceId = bin2hex(random_bytes(8));
         $token = bin2hex(random_bytes(32));
-
         $this->storage->put('devices', $deviceId, [
             'tokenHash' => hash('sha256', $token),
             'name' => mb_substr($deviceName, 0, 60),
             'role' => $role,
+            'tenantId' => $tenantId,
             'pairedAt' => gmdate('c'),
             'revoked' => false,
         ]);
-        $this->storage->log(sprintf('paired device=%s', $deviceId));
+        $this->storage->log(sprintf('paired device=%s tenant=%s', $deviceId, $tenantId));
 
         // トークンを返すのはこの1回だけ。サーバーには残らない。
-        return ['token' => $token, 'deviceId' => $deviceId, 'role' => $role];
+        return [
+            'token' => $token,
+            'deviceId' => $deviceId,
+            'role' => $role,
+            'tenantId' => $tenantId,
+        ];
     }
 
     /**
@@ -111,5 +137,29 @@ final class Auth
             throw new ApiError(403, 'この端末ではInstagramの連携設定を変更できません');
         }
         return $deviceId;
+    }
+
+    /** 既存端末は従来領域へ残し、移行で連携を切らない。 */
+    public function tenantId(string $deviceId): string
+    {
+        $record = $this->storage->get('devices', $deviceId);
+        if ($record === null) {
+            throw new ApiError(401, 'ホームページとの連携が切れています');
+        }
+        $tenantId = is_string($record['tenantId'] ?? null)
+            ? Storage::safeKey($record['tenantId'])
+            : '';
+        return $tenantId !== '' ? $tenantId : 'legacy';
+    }
+
+    public function isAdmin(string $deviceId): bool
+    {
+        $record = $this->storage->get('devices', $deviceId);
+        if ($record === null) {
+            return false;
+        }
+        // roleを持たない既存端末は、従来どおり管理端末として扱う。
+        $role = is_string($record['role'] ?? null) ? $record['role'] : 'admin';
+        return $role === 'admin';
     }
 }

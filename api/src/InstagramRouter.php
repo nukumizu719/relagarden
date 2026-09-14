@@ -46,6 +46,40 @@ final class InstagramRouter
         $tail = substr($route, strlen('/instagram'));
         $tail = '/' . trim($tail, '/');
 
+        if ($tail === '/invites') {
+            $this->requireMethod($method, 'POST');
+            $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $limiter->hit(
+                'iginvite_' . $deviceId,
+                5,
+                '招待の作成が続いています。しばらく時間をおいてください'
+            );
+            $body = $this->json($rawBody);
+            $name = is_string($body['workspaceName'] ?? null) ? $body['workspaceName'] : '';
+            $invites = new InstagramInviteService($this->storage, $auth);
+            return [200, ['ok' => true] + $invites->create($name, $deviceId)];
+        }
+
+        if ($tail === '/invites/claim') {
+            $this->requireMethod($method, 'POST');
+            $limiter->hit(
+                'igclaim_' . $clientIp,
+                $this->config->int('rate_max_pairings'),
+                'しばらく時間をおいてからお試しください'
+            );
+            $body = $this->json($rawBody);
+            $token = is_string($body['inviteToken'] ?? null) ? $body['inviteToken'] : '';
+            $deviceName = is_string($body['deviceName'] ?? null) ? $body['deviceName'] : 'iPhone';
+            $invites = new InstagramInviteService($this->storage, $auth);
+            $result = $invites->claim($token, $deviceName);
+            return [200, [
+                'ok' => true,
+                'token' => $result['deviceId'] . '.' . $result['token'],
+                'role' => $result['role'],
+                'workspaceName' => $result['workspaceName'],
+            ]];
+        }
+
         if ($tail === '/oauth/callback') {
             $this->requireMethod($method, 'GET');
             $result = $this->oauthService()->complete($query['state'] ?? '', $query['code'] ?? '');
@@ -55,48 +89,68 @@ final class InstagramRouter
         if ($tail === '/oauth/start') {
             $this->requireMethod($method, 'POST');
             $deviceId = $auth->requireAdmin($headers['authorization'] ?? null);
+            $tenantId = $auth->tenantId($deviceId);
             $limiter->hit(
                 'igoauth_' . $deviceId,
                 $this->config->int('rate_max_instagram_oauth_starts'),
                 '連携操作が続いています。しばらく時間をおいてください'
             );
-            return [200, ['ok' => true] + $this->oauthService()->start($deviceId)];
+            return [200, ['ok' => true] + $this->oauthService()->start($deviceId, $tenantId)];
         }
 
         if ($tail === '/oauth/refresh') {
             $this->requireMethod($method, 'POST');
             $deviceId = $auth->requireAdmin($headers['authorization'] ?? null);
-            return [200, ['ok' => true] + $this->oauthService()->refresh($deviceId)];
+            $tenantId = $auth->tenantId($deviceId);
+            return [200, ['ok' => true] + $this->oauthService()->refresh($deviceId, $tenantId)];
         }
 
         if ($tail === '/disconnect') {
             $this->requireMethod($method, 'POST');
             $deviceId = $auth->requireAdmin($headers['authorization'] ?? null);
-            $this->oauthService()->disconnect($deviceId);
+            $tenantId = $auth->tenantId($deviceId);
+            $this->oauthService()->disconnect($deviceId, $tenantId);
             return [200, ['ok' => true, 'connected' => false]];
         }
 
         if ($tail === '/account') {
             $this->requireMethod($method, 'GET');
-            $auth->requireDevice($headers['authorization'] ?? null);
+            $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $tenantId = $auth->tenantId($deviceId);
+            $workspace = (new InstagramInviteService($this->storage, $auth))
+                ->workspaceName($tenantId);
             if ($this->oauthClient !== null) {
-                return [200, ['ok' => true] + $this->oauthService()->status()];
+                return [200, [
+                    'ok' => true,
+                    'workspaceName' => $workspace,
+                    'canManageInstagram' => $auth->isAdmin($deviceId),
+                ] + $this->oauthService()->status($tenantId)];
             }
-            $ready = $this->client !== null && InstagramService::isConfigured($this->config);
+            $scopedConfig = $this->configForTenant($tenantId);
+            $ready = $this->client !== null && InstagramService::isConfigured($scopedConfig);
             return [200, [
                 'ok' => true,
                 'configured' => $ready,
                 'connected' => $ready,
-                'accountName' => $ready ? $this->service()->accountName() : '',
+                'accountName' => $ready ? $this->service($tenantId)->accountName() : '',
                 'expiresAt' => '',
+                'workspaceName' => $workspace,
+                'canManageInstagram' => $auth->isAdmin($deviceId),
             ]];
         }
 
-        $service = $this->service();
+        // OAuthも投稿クライアントも無い従来構成では、以前と同じく
+        // 認証より先に「準備中」を返す。既存アプリの案内を変えない。
+        if ($this->client === null && $this->oauthClient === null) {
+            throw new ApiError(503, 'Instagramはまだ連携されていません');
+        }
 
         if ($tail === '/prepare') {
             $this->requireMethod($method, 'POST');
             $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $tenantId = $auth->tenantId($deviceId);
+            $service = $this->service($tenantId);
+            $scopedConfig = $this->configForTenant($tenantId);
             if (strlen($rawBody) > $this->config->int('instagram_max_request_bytes')) {
                 throw new ApiError(413, '写真が大きすぎます');
             }
@@ -108,7 +162,7 @@ final class InstagramRouter
             );
             // **投稿先アカウントごとの制限。** 端末を替えても上限を超えられない。
             $limiter->hit(
-                InstagramService::accountRateKey($this->config) . '_prep',
+                InstagramService::accountRateKey($scopedConfig) . '_prep',
                 $this->config->int('rate_max_instagram_account_prepares'),
                 'このアカウントへの準備が続いています。しばらく時間をおいてください'
             );
@@ -118,6 +172,7 @@ final class InstagramRouter
         if ($tail === '/status') {
             $this->requireMethod($method, 'GET');
             $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $service = $this->service($auth->tenantId($deviceId));
             $limiter->hit(
                 'igstat_' . $deviceId,
                 $this->config->int('rate_max_instagram_status'),
@@ -130,6 +185,9 @@ final class InstagramRouter
         if ($tail === '/publish') {
             $this->requireMethod($method, 'POST');
             $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $tenantId = $auth->tenantId($deviceId);
+            $service = $this->service($tenantId);
+            $scopedConfig = $this->configForTenant($tenantId);
             // 端末ごとの制限。
             $limiter->hit(
                 'igpub_' . $deviceId,
@@ -138,7 +196,7 @@ final class InstagramRouter
             );
             // **投稿先アカウントごとの制限。** 端末を替えても上限を超えられない。
             $limiter->hit(
-                InstagramService::accountRateKey($this->config) . '_pub',
+                InstagramService::accountRateKey($scopedConfig) . '_pub',
                 $this->config->int('rate_max_instagram_account_publishes'),
                 'このアカウントへの投稿が続いています。しばらく時間をおいてください'
             );
@@ -148,18 +206,50 @@ final class InstagramRouter
         if ($tail === '/discard') {
             $this->requireMethod($method, 'POST');
             $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $service = $this->service($auth->tenantId($deviceId));
             return [200, ['ok' => true] + $service->discard($this->json($rawBody), $deviceId)];
         }
 
         return [404, ['ok' => false, 'message' => '入口が見つかりません']];
     }
 
-    private function service(): InstagramService
+    private function service(string $tenantId): InstagramService
     {
-        if ($this->client === null) {
+        $config = $this->configForTenant($tenantId);
+        $client = $this->client;
+        if ($client === null && InstagramService::isConfigured($config)
+            && $config->str('instagram_access_token') !== '') {
+            $client = new CurlInstagramClient(
+                $config->str('instagram_access_token'),
+                $config->str('instagram_user_id'),
+                $config->str('instagram_graph_api_version'),
+                $this->storage,
+            );
+        }
+        if ($client === null) {
             throw new ApiError(503, 'Instagramはまだ連携されていません');
         }
-        return new InstagramService($this->config, $this->storage, $this->client);
+        return new InstagramService($config, $this->storage, $client);
+    }
+
+    private function configForTenant(string $tenantId): Config
+    {
+        $connection = InstagramOAuthService::activeConnection($this->storage, $tenantId);
+        if ($connection === null) {
+            // 既存環境の手入力設定は従来領域だけで使い、別利用者へ漏らさない。
+            return $tenantId === 'legacy'
+                ? $this->config
+                : $this->config->with([
+                    'instagram_access_token' => '',
+                    'instagram_user_id' => '',
+                    'instagram_account_name' => '',
+                ]);
+        }
+        return $this->config->with([
+            'instagram_access_token' => (string) ($connection['accessToken'] ?? ''),
+            'instagram_user_id' => (string) ($connection['userId'] ?? ''),
+            'instagram_account_name' => (string) ($connection['username'] ?? ''),
+        ]);
     }
 
     private function oauthService(): InstagramOAuthService
