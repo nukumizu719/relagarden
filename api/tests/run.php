@@ -283,6 +283,52 @@ test('接続確認・更新・解除は端末認証が必要', function (): void
 // ══════════════════════════════════════════════════════════
 group('Instagram：招待QRと利用者別の投稿先');
 
+test('投稿者端末はQRなしで自分専用の利用先を作り管理端末になる', function (): void {
+    [$config, $storage, $router, , $legacyToken] = igOAuthWorkspace();
+    $auth = new Auth($config, $storage);
+    $issued = $auth->issueDevice('自分のiPhone', 'poster', 'legacy');
+    $token = 'Bearer ' . $issued['deviceId'] . '.' . $issued['token'];
+
+    [$status, $created] = $router->handle(
+        'POST',
+        '/instagram/workspaces/self',
+        json_encode(['workspaceName' => '自分のリラガーデン']),
+        ['authorization' => $token],
+        '203.0.113.19'
+    );
+    assertSame(200, $status);
+    assertSame('自分のリラガーデン', $created['workspaceName'] ?? '');
+    assertSame(true, $created['canManageInstagram'] ?? false);
+    assertTrue($auth->tenantId($issued['deviceId']) !== 'legacy');
+    assertSame(true, $auth->isAdmin($issued['deviceId']));
+
+    [, $again] = $router->handle(
+        'POST',
+        '/instagram/workspaces/self',
+        json_encode(['workspaceName' => '別名を作らない']),
+        ['authorization' => $token],
+        '203.0.113.19'
+    );
+    assertSame('自分のリラガーデン', $again['workspaceName'] ?? '');
+
+    [, $start] = $router->handle(
+        'POST', '/instagram/oauth/start', '', ['authorization' => $token], '203.0.113.19'
+    );
+    parse_str((string) parse_url((string) $start['authorizationUrl'], PHP_URL_QUERY), $oauthQuery);
+    $_GET = ['state' => (string) $oauthQuery['state'], 'code' => 'AUTH_CODE_SELF'];
+    [$callbackStatus] = $router->handle('GET', '/instagram/oauth/callback', '', [], '203.0.113.19');
+    $_GET = [];
+    assertSame(200, $callbackStatus);
+    [, $selfAccount] = $router->handle(
+        'GET', '/instagram/account', '', ['authorization' => $token], '203.0.113.19'
+    );
+    [, $legacyAccount] = $router->handle(
+        'GET', '/instagram/account', '', ['authorization' => $legacyToken], '203.0.113.20'
+    );
+    assertSame(true, $selfAccount['connected'] ?? false);
+    assertSame(false, $legacyAccount['connected'] ?? true);
+});
+
 test('招待QRは一度だけ使え、受取端末を新しい利用者領域へ固定する', function (): void {
     [, , $router, , $legacyToken] = igOAuthWorkspace();
     [$createStatus, $created] = $router->handle(

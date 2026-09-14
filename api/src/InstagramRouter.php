@@ -46,6 +46,20 @@ final class InstagramRouter
         $tail = substr($route, strlen('/instagram'));
         $tail = '/' . trim($tail, '/');
 
+        if ($tail === '/workspaces/self') {
+            $this->requireMethod($method, 'POST');
+            $deviceId = $auth->requireDevice($headers['authorization'] ?? null);
+            $limiter->hit(
+                'igself_' . $deviceId,
+                3,
+                '連携操作が続いています。しばらく時間をおいてください'
+            );
+            $body = $this->json($rawBody);
+            $name = is_string($body['workspaceName'] ?? null) ? $body['workspaceName'] : '';
+            $workspaces = new InstagramInviteService($this->storage, $auth);
+            return [200, ['ok' => true] + $workspaces->createForCurrentDevice($name, $deviceId)];
+        }
+
         if ($tail === '/invites') {
             $this->requireMethod($method, 'POST');
             $deviceId = $auth->requireDevice($headers['authorization'] ?? null);

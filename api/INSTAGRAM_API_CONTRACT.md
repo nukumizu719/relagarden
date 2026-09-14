@@ -4,6 +4,9 @@ Macアプリが保持する秘密は、既存のXserver端末トークンだけ�
 
 ## 接続
 
+- `POST /api/instagram/workspaces/self`（端末認証必須）
+  - 投稿者端末が自分のInstagramを使う場合、QRなしで独立した利用先へ移します。
+  - 再試行しても同じ利用先を返し、従来利用者の接続情報とは混ざりません。
 - `POST /api/instagram/oauth/start`（管理者端末の認証必須）
   - 応答: `authorizationUrl`, `expiresAt`
   - MacはURLを既定ブラウザで開きます。
