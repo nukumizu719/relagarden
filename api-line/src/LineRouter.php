@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Relagarden\Line;
 
 /**
- * LINE受信だけの受け口。
+ * LINE受信と、明示的に有効化した本人限定AI返信テストの受け口。
  *
  * ここには施工事例の掲載（/publish /status /unpublish）は無い。
  * 掲載はiPhoneからGitHubへ直接行う方式のままで、こちらは触らない。
@@ -14,6 +14,7 @@ namespace Relagarden\Line;
  * | POST     | /api/line/webhook | LINEからの配信を受ける（署名を確認）    |
  * | GET      | /api/line/inbox   | まだ取り込んでいない問い合わせを渡す    |
  * | POST     | /api/line/sync    | 取り込めたものへ受け取り済みの印を付ける |
+ * | POST     | /api/line/send    | 確認済みの本人向け文字返信を1件送る       |
  */
 final class LineRouter
 {
@@ -21,6 +22,8 @@ final class LineRouter
         private readonly LineConfig $config,
         private readonly LineStore $store,
         private readonly LineProfile $profile,
+        private readonly ?LineOwnerAiReplyService $ownerAiReply = null,
+        private readonly ?LineManualSendService $manualSend = null,
     ) {
     }
 
@@ -50,7 +53,14 @@ final class LineRouter
                     $this->config->int('rate_max_webhook'),
                     'ただいま受け取れません'
                 );
-                $service = new LineWebhookService($this->config, $this->store, $this->profile);
+                $ownerAiReply = $this->ownerAiReply
+                    ?? new LineOwnerAiReplyService($this->config, $this->store);
+                $service = new LineWebhookService(
+                    $this->config,
+                    $this->store,
+                    $this->profile,
+                    $ownerAiReply,
+                );
                 return [200, $service->receive($rawBody, $headers)];
             }
 
@@ -79,6 +89,18 @@ final class LineRouter
                     return [500, ['ok' => false, 'message' => 'ただいま記録できません']];
                 }
                 return [200, ['ok' => true] + $result];
+            }
+
+            if ($route === '/send') {
+                $this->requireMethod($method, 'POST');
+                $this->requireInboxToken($headers, $clientIp);
+                if (strlen($rawBody) > $this->config->int('max_send_body_bytes')) {
+                    throw new LineError(413, '内容が大きすぎます', 'E_SEND_BODY_TOO_BIG');
+                }
+                $body = $this->json($rawBody);
+                $service = $this->manualSend
+                    ?? new LineManualSendService($this->config, $this->store);
+                return [200, ['ok' => true] + $service->send($body)];
             }
 
             return [404, ['ok' => false, 'message' => '入口が見つかりません']];

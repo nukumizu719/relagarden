@@ -36,7 +36,7 @@ final class LineStore
         if ($this->dir === '') {
             throw new LineStorageUnavailable('E_STORAGE_PATH');
         }
-        foreach (['', '/events', '/inbox', '/rate', '/logs'] as $sub) {
+        foreach (['', '/events', '/inbox', '/rate', '/requests', '/logs'] as $sub) {
             $path = $this->dir . $sub;
             if (!is_dir($path) && !@mkdir($path, 0700, true) && !is_dir($path)) {
                 throw new LineStorageUnavailable('E_STORAGE_MKDIR');
@@ -99,6 +99,45 @@ final class LineStore
             return false;
         }
         return true;
+    }
+
+    /**
+     * 同じ鍵を最初の1回だけ保存する。
+     *
+     * 送信ボタンの二度押しや通信再試行が同時に来ても、同じrequestIdで
+     * 外部送信へ進めるのは1つだけにする。`x` は既存ファイルを上書きしない。
+     *
+     * @param array<string,mixed> $data
+     */
+    public function claim(string $bucket, string $key, array $data): bool
+    {
+        $path = $this->pathFor($bucket, $key);
+        if ($path === null) {
+            return false;
+        }
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            return false;
+        }
+        $handle = @fopen($path, 'x');
+        if ($handle === false) {
+            return false;
+        }
+        $written = false;
+        try {
+            if (flock($handle, LOCK_EX) && fwrite($handle, $json) === strlen($json)) {
+                fflush($handle);
+                @chmod($path, 0600);
+                $written = true;
+            }
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+        if (!$written) {
+            @unlink($path);
+        }
+        return $written;
     }
 
     /** @return array<string,mixed>|null */

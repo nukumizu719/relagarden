@@ -376,6 +376,9 @@ jobs:
           CHANNEL_SECRET: ${{ secrets.RELAGARDEN_LINE_CHANNEL_SECRET }}
           CHANNEL_ACCESS_TOKEN: ${{ secrets.RELAGARDEN_LINE_CHANNEL_ACCESS_TOKEN }}
           INBOX_TOKEN: ${{ secrets.RELAGARDEN_LINE_INBOX_TOKEN }}
+          MANUAL_SEND_ENABLED: ${{ vars.RELAGARDEN_LINE_MANUAL_SEND_ENABLED || 'false' }}
+          MANUAL_SEND_TEST_MODE: ${{ vars.RELAGARDEN_LINE_MANUAL_SEND_TEST_MODE || 'false' }}
+          MANUAL_SEND_ALLOWED_USER_ID: ${{ secrets.RELAGARDEN_LINE_MANUAL_SEND_ALLOWED_USER_ID }}
         run: |
           set -eu
 
@@ -401,6 +404,37 @@ jobs:
           check RELAGARDEN_LINE_CHANNEL_ACCESS_TOKEN "$CHANNEL_ACCESS_TOKEN" 16
           check RELAGARDEN_LINE_INBOX_TOKEN "$INBOX_TOKEN" 64
 
+          case "$MANUAL_SEND_ENABLED" in
+            true|false) ;;
+            *) echo 'RELAGARDEN_LINE_MANUAL_SEND_ENABLED は true または false にしてください' >&2; exit 1 ;;
+          esac
+          case "$MANUAL_SEND_TEST_MODE" in
+            true|false) ;;
+            *) echo 'RELAGARDEN_LINE_MANUAL_SEND_TEST_MODE は true または false にしてください' >&2; exit 1 ;;
+          esac
+
+          # 送信ONのときは、本人限定テストと本人userIdが必ず必要。
+          # どれか1つでも不足したら、危険な設定を置かずデプロイ自体を止める。
+          if [ "$MANUAL_SEND_ENABLED" = true ]; then
+            if [ "$MANUAL_SEND_TEST_MODE" != true ]; then
+              echo '手動送信ONには本人限定テストONが必要です' >&2
+              exit 1
+            fi
+            if [ "${#MANUAL_SEND_ALLOWED_USER_ID}" -ne 33 ] \
+              || [ "${MANUAL_SEND_ALLOWED_USER_ID#U}" = "$MANUAL_SEND_ALLOWED_USER_ID" ]; then
+              echo '本人LINE userIdを確認できません' >&2
+              exit 1
+            fi
+            case "${MANUAL_SEND_ALLOWED_USER_ID#U}" in
+              ''|*[!0-9A-Fa-f]*) echo '本人LINE userIdを確認できません' >&2; exit 1 ;;
+              *) ;;
+            esac
+          else
+            # OFFの間は、Secretが残っていても生成する設定には入れない。
+            MANUAL_SEND_TEST_MODE=false
+            MANUAL_SEND_ALLOWED_USER_ID=''
+          fi
+
           mkdir -p line-config-out
           umask 077
           {
@@ -410,6 +444,14 @@ jobs:
             printf "    'channel_secret' => '%s',\n" "$CHANNEL_SECRET"
             printf "    'channel_access_token' => '%s',\n" "$CHANNEL_ACCESS_TOKEN"
             printf "    'inbox_token' => '%s',\n" "$INBOX_TOKEN"
+            # AI自動返信は今回使わない。常にOFFで生成する。
+            printf "    'ai_reply_enabled' => false,\n"
+            printf "    'ai_reply_test_mode' => false,\n"
+            printf "    'ai_reply_allowed_user_id' => '',\n"
+            printf "    'manual_send_enabled' => %s,\n" "$MANUAL_SEND_ENABLED"
+            printf "    'manual_send_test_mode' => %s,\n" "$MANUAL_SEND_TEST_MODE"
+            printf "    'manual_send_allowed_user_id' => '%s',\n" "$MANUAL_SEND_ALLOWED_USER_ID"
+            printf "    'manual_send_daily_limit' => 1,\n"
             printf "    'storage_dir' => '/home/xs674757/relagarden.jp/private/line-storage',\n"
             printf "    'require_https' => true,\n"
             printf '];\n'

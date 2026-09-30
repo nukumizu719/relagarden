@@ -62,7 +62,10 @@ grep -q あたらしい "$dst/index.html" && ok 'ホームページ本体は新�
 if grep -q -- '--exclude=api/' .github/workflows/deploy.yml \
   && grep -q -- '--exclude=line/' .github/workflows/deploy.yml \
   && grep -q -- 'path: api-line/src/' .github/workflows/deploy.yml \
-  && grep -q -- 'path: api-line/public/' .github/workflows/deploy.yml; then
+  && grep -q -- 'path: api-line/public/' .github/workflows/deploy.yml \
+  && grep -q -- "'ai_reply_enabled' => false" .github/workflows/deploy.yml \
+  && grep -q -- 'RELAGARDEN_LINE_MANUAL_SEND_TEST_MODE' .github/workflows/deploy.yml \
+  && grep -q -- 'RELAGARDEN_LINE_MANUAL_SEND_ALLOWED_USER_ID' .github/workflows/deploy.yml; then
   ok 'deploy.yml に除外とLINE APIの配置工程が入っている'
 else
   ng 'deploy.yml の除外またはLINE API配置工程が不足している'

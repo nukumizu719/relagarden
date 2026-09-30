@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Relagarden\Line;
 
 /**
- * LINE受信だけの設定。
+ * LINE受信と、明示的に有効化する本人限定テスト送信の設定。
  *
  * 施工事例の掲載（api/ 側）とは別のファイルを読む。
  * 掲載はiPhoneからGitHubへ直接行う方式のままで、こちらは触らない。
@@ -62,8 +62,9 @@ final class LineConfig
         if (self::looksPublic($storageDir)) {
             throw new LineConfigMissing('E_CONFIG_STORAGE_PUBLIC');
         }
-        // チャネルアクセストークンは任意。無ければ表示名を取りに行かない
-        // （空欄のまま受信し、谷口さんが後から手で入れる）。
+        // チャネルアクセストークンは受信だけなら任意。無ければ表示名を
+        // 取りに行かない。本人限定AI返信では必須だが、不足していても
+        // 受信を止めず、返信機能だけが安全側で停止する。
 
         return new self($loaded);
     }
@@ -93,6 +94,25 @@ final class LineConfig
             'max_id_length' => 128,
             // 1回の受信箱で返す最大件数。
             'inbox_limit' => 50,
+            // 本人限定AI返信は、必要項目を明示して初めて動く。
+            'ai_reply_enabled' => false,
+            'ai_reply_test_mode' => false,
+            'ai_reply_allowed_user_id' => '',
+            'ai_gateway_base_url' => '',
+            'ai_gateway_token' => '',
+            'ai_reply_daily_limit' => 20,
+            'ai_gateway_timeout_seconds' => 8,
+            'line_reply_timeout_seconds' => 5,
+            // アプリからの手動送信は、本人限定テストの設定を別に持つ。
+            // コードを置いただけでは動かず、両方を明示的に有効にする必要がある。
+            'manual_send_enabled' => false,
+            'manual_send_test_mode' => false,
+            'manual_send_allowed_user_id' => '',
+            'manual_send_daily_limit' => 20,
+            'manual_send_timeout_seconds' => 5,
+            'max_send_body_bytes' => 16 * 1024,
+            'max_send_text_length' => 2000,
+            'max_send_request_id_length' => 128,
         ];
     }
 
@@ -110,7 +130,9 @@ final class LineConfig
 
     public function bool(string $key): bool
     {
-        return (bool) ($this->values[$key] ?? false);
+        // 文字列 'false' はPHPでは true 扱いになるため、設定の安全スイッチでは
+        // 本物の真偽値 true だけをONとして認める。
+        return ($this->values[$key] ?? null) === true;
     }
 
     /**

@@ -7,10 +7,9 @@ namespace Relagarden\Line;
 /**
  * 公式LINEに届いたメッセージを受け取って、受信箱へ入れる。
  *
- * **ここでは返信を一切送らない。** 自動応答（応答メッセージ）は
- * LINE側の設定のまま動く。このAPIは受け取って控えるだけで、
- * 送信・一斉配信・既読・画像の取得のいずれも行わない。
- * 呼ぶLINEの機能は「表示名の取得」1つだけ。
+ * 初期状態は受信専用。本人限定テストを明示的に有効にした場合だけ、
+ * 本文の保存と二重処理防止を完了した後に、許可された1人へ
+ * replyTokenで返信する。一斉配信・プッシュ・既読・画像取得は行わない。
  *
  * 受け取るのは1対1の**文字のメッセージだけ**。
  * 写真・スタンプ・友だち追加は、二度処理しない印だけ残して読み捨てる。
@@ -40,6 +39,7 @@ final class LineWebhookService
         private readonly LineConfig $config,
         private readonly LineStore $store,
         private readonly LineProfile $profile,
+        private readonly ?LineOwnerAiReplyService $ownerAiReply = null,
     ) {
     }
 
@@ -228,6 +228,15 @@ final class LineWebhookService
 
         // ── 2. 本文が残ってから、二度処理しない印を付ける ────
         $this->writeMarks($marks);
+
+        // 受信と二重処理防止を完了してから、本人限定テストの返信を試す。
+        // 返信に失敗しても、本文は受信箱に残っているため手動対応できる。
+        if ($this->ownerAiReply !== null) {
+            $replyToken = is_string($event['replyToken'] ?? null)
+                ? $event['replyToken']
+                : '';
+            $this->ownerAiReply->replyIfAllowed($lineUserId, $text, $replyToken);
+        }
         return self::stored;
     }
 
