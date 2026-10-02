@@ -7,13 +7,12 @@ namespace Relagarden\Line;
 /**
  * 公式LINEに届いたメッセージを受け取って、受信箱へ入れる。
  *
- * **ここでは返信を一切送らない。** 自動応答（応答メッセージ）は
- * LINE側の設定のまま動く。このAPIは受け取って控えるだけで、
- * 送信・一斉配信・既読・画像の取得のいずれも行わない。
- * 呼ぶLINEの機能は「表示名の取得」1つだけ。
+ * 初期状態は受信専用。本人限定テストを明示的に有効にした場合だけ、
+ * 本文の保存と二重処理防止を完了した後に、許可された1人へ
+ * replyTokenで返信する。一斉配信・プッシュ・既読・画像取得は行わない。
  *
- * 受け取るのは1対1の**文字のメッセージだけ**。
- * 写真・スタンプ・友だち追加は、二度処理しない印だけ残して読み捨てる。
+ * 受け取るのは1対1の文字と写真到着の印だけ。
+ * 写真の中身は取得しない。スタンプ・友だち追加は、二度処理しない印だけ残す。
  *
  * ## 書く順番（ここを変えないこと）
  *
@@ -40,6 +39,7 @@ final class LineWebhookService
         private readonly LineConfig $config,
         private readonly LineStore $store,
         private readonly LineProfile $profile,
+        private readonly ?LineOwnerAiReplyService $ownerAiReply = null,
     ) {
     }
 
@@ -167,10 +167,11 @@ final class LineWebhookService
         $isDirect = ($source['type'] ?? '') === 'user' && $lineUserId !== '';
         $kind = is_string($message['type'] ?? null) ? $message['type'] : 'unknown';
 
-        // 文字のメッセージ以外（写真・スタンプ・友だち追加・グループ）は
-        // 受信箱へ入れない。中身も取りに行かない。
-        // 印だけは残して、再送で何度も見に来ないようにする。
-        if (!$isMessage || !$isDirect || $kind !== 'text' || !is_string($message['text'] ?? null)) {
+        $isText = $kind === 'text' && is_string($message['text'] ?? null);
+        $isImage = $kind === 'image';
+        // 写真は「届いた」という情報だけを受け取り、中身は取りに行かない。
+        // スタンプ・友だち追加・グループは印だけ残す。
+        if (!$isMessage || !$isDirect || (!$isText && !$isImage)) {
             $this->writeMarks($marks);
             return self::skipped;
         }
@@ -195,8 +196,10 @@ final class LineWebhookService
             return self::skipped;
         }
 
-        // 本文は書き換えない。長すぎるものだけ切る。
-        $text = mb_substr($message['text'], 0, self::maxTextLength);
+        // 本文は書き換えない。長すぎるものだけ切る。写真本文は保存しない。
+        $text = $isText
+            ? mb_substr((string) $message['text'], 0, self::maxTextLength)
+            : '';
 
         if (!array_key_exists($lineUserId, $nameCache)) {
             try {
@@ -209,24 +212,46 @@ final class LineWebhookService
         }
 
         // ── 1. 先に本文を確実に残す ──────────────────────────
-        $saved = $this->store->put('inbox', $key, [
+        $record = [
             'id' => $key,
             'eventKey' => $eventId !== '' ? $eventId : $messageId,
             'messageId' => $messageId,
             'lineUserId' => $lineUserId,
             'lineDisplayName' => $nameCache[$lineUserId],
-            'kind' => 'text',
+            'kind' => $isImage ? 'image' : 'text',
             'text' => $text,
             'receivedAt' => gmdate('c', (int) ($receivedMs / 1000)),
             'takenAt' => '',
-        ]);
+        ] + LineReceptionStateService::manualMetadata();
+        $saved = $this->store->put('inbox', $key, $record);
         if (!$saved) {
             // 保存できていないのに200を返さない。
             // 200を返すとLINEは再送してくれず、問い合わせが消えてしまう。
             throw new LineError(500, 'ただいま受け取れません', 'E_WRITE_INBOX');
         }
 
-        // ── 2. 本文が残ってから、二度処理しない印を付ける ────
+        // ── 2. 本文を残してから、本人限定受付の状態を更新する ────
+        // 初期値はAI対象外。AIが明示的に引き継いだ場合だけneedsHumanをtrueにする。
+        if ($this->ownerAiReply !== null) {
+            $replyToken = is_string($event['replyToken'] ?? null)
+                ? $event['replyToken']
+                : '';
+            $metadata = $this->ownerAiReply->replyIfAllowed(
+                $lineUserId,
+                $text,
+                $replyToken,
+                $isImage ? 'image' : 'text',
+            );
+            $record['needsHuman'] = $metadata['needsHuman'];
+            $record['reasonCode'] = $metadata['reasonCode'];
+            $record['collectedFields'] = $metadata['collectedFields'];
+            if (!$this->store->put('inbox', $key, $record)) {
+                // 元の記録はMANUAL_ONLYで残り、AI引継ぎとは区別される。
+                throw new LineError(500, 'ただいま受け取れません', 'E_WRITE_RECEPTION_META');
+            }
+        }
+
+        // ── 3. 状態と受信箱が残ってから、二度処理しない印を付ける ────
         $this->writeMarks($marks);
         return self::stored;
     }

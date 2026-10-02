@@ -16,9 +16,9 @@ return [
     // 届いた内容が本当にLINEからかを確かめるために使う。
     'channel_secret' => 'ここへチャネルシークレットを貼る',
 
-    // 「チャネルアクセストークン（長期）」。
-    // 使うのはお客様の表示名を読む1か所だけ。メッセージは送らない。
-    // 空のままでもよい（そのときは表示名が空欄で届く）。
+    // 「チャネルアクセストークン（長期）」。通常は表示名の取得に使う。
+    // 本人限定AI返信テストを有効にした場合だけreplyToken返信にも使う。
+    // AI返信を使わない場合は空でもよい（表示名も空欄で届く）。
     'channel_access_token' => '',
 
     // ── iPhoneアプリとの合言葉 ────────────────────────────────
@@ -32,6 +32,41 @@ return [
     // 掲載用のPAT・Xserverの管理パスワードとは必ず別物にすること。
     // 作った値はiPhoneアプリの設定「公式LINEの受信」へ入れる。
     'inbox_token' => 'ここへ openssl rand -hex 32 の出力（64文字）を貼る',
+
+    // ── 本人限定AI返信テスト ─────────────────────────────────
+    // 初期状態は必ず両方 false。コードを置いただけでは誰にも返信しない。
+    // 本人限定テストを始める直前にだけ両方 true にし、許可するuserIdは
+    // よしさん本人の1件だけにする。表示名では判定しない。
+    'ai_reply_enabled' => false,
+    'ai_reply_test_mode' => false,
+    // trueのまま使う。アプリ側もONにした場合だけ本人へ返信する。
+    'ai_reply_runtime_control_required' => true,
+    'ai_reply_allowed_user_id' => '',
+    // 本人限定テストの識別子。同じ値の間は受付状態を引き継ぐ。
+    // 再テスト時だけ別の値にする（APIキーやパスワードは入れない）。
+    'ai_reply_session_id' => '',
+
+    // ClaudeのAPIキーはここへ置かない。よし管理AI GatewayのURLと、
+    // LINE受信サーバー専用にペアリングしたGatewayトークンだけを置く。
+    'ai_gateway_base_url' => 'https://yoshi-ai-gateway.shakkin-diet-coach-api.workers.dev/v1',
+    'ai_gateway_token' => '',
+    // 初回の複数ターンテストは最大3質問。最後に引継ぎ文を1回返すため、
+    // 1日の上限は4に固定する。
+    'ai_reception_max_questions' => 3,
+    'ai_reply_daily_limit' => 4,
+    'ai_gateway_timeout_seconds' => 8,
+    'line_reply_timeout_seconds' => 5,
+
+    // ── アプリで最終確認した後の本人限定送信 ───────────────
+    // 自動返信とは別の安全設定。初期状態は必ず両方 false。
+    // アプリの確認画面で宛先と本文を見て「送信する」を押した場合だけ使う。
+    // 最初の実機テスト中は、許可するuserIdをよしさん本人の1件だけにする。
+    'manual_send_enabled' => false,
+    'manual_send_test_mode' => false,
+    'manual_send_allowed_user_id' => '',
+    // 本人への手動送信も1日20回で停止する。
+    'manual_send_daily_limit' => 20,
+    'manual_send_timeout_seconds' => 5,
 
     // ── 保存場所 ──────────────────────────────────────────────
     // 届いた問い合わせの置き場所。**public_html の外にすること。**
@@ -63,4 +98,8 @@ return [
     'max_sync_bytes' => 64 * 1024,
     'max_sync_ids' => 200,
     'max_id_length' => 128,
+    // /api/line/send の本文・返信文・二重送信防止番号の上限
+    'max_send_body_bytes' => 16 * 1024,
+    'max_send_text_length' => 2000,
+    'max_send_request_id_length' => 128,
 ];

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Relagarden\Line;
 
 /**
- * LINE受信だけの受け口。
+ * LINE受信と、明示的に有効化した本人限定AI返信テストの受け口。
  *
  * ここには施工事例の掲載（/publish /status /unpublish）は無い。
  * 掲載はiPhoneからGitHubへ直接行う方式のままで、こちらは触らない。
@@ -14,6 +14,9 @@ namespace Relagarden\Line;
  * | POST     | /api/line/webhook | LINEからの配信を受ける（署名を確認）    |
  * | GET      | /api/line/inbox   | まだ取り込んでいない問い合わせを渡す    |
  * | POST     | /api/line/sync    | 取り込めたものへ受け取り済みの印を付ける |
+ * | POST     | /api/line/reception/reset | 本人限定受付の停止状態を解除する   |
+ * | GET/POST | /api/line/reception/mode  | 本人限定受付AIを確認・切り替える   |
+ * | POST     | /api/line/send    | 確認済みの本人向け文字返信を1件送る       |
  */
 final class LineRouter
 {
@@ -21,6 +24,8 @@ final class LineRouter
         private readonly LineConfig $config,
         private readonly LineStore $store,
         private readonly LineProfile $profile,
+        private readonly ?LineOwnerAiReplyService $ownerAiReply = null,
+        private readonly ?LineManualSendService $manualSend = null,
     ) {
     }
 
@@ -50,7 +55,14 @@ final class LineRouter
                     $this->config->int('rate_max_webhook'),
                     'ただいま受け取れません'
                 );
-                $service = new LineWebhookService($this->config, $this->store, $this->profile);
+                $ownerAiReply = $this->ownerAiReply
+                    ?? new LineOwnerAiReplyService($this->config, $this->store);
+                $service = new LineWebhookService(
+                    $this->config,
+                    $this->store,
+                    $this->profile,
+                    $ownerAiReply,
+                );
                 return [200, $service->receive($rawBody, $headers)];
             }
 
@@ -79,6 +91,73 @@ final class LineRouter
                     return [500, ['ok' => false, 'message' => 'ただいま記録できません']];
                 }
                 return [200, ['ok' => true] + $result];
+            }
+
+            if ($route === '/send') {
+                $this->requireMethod($method, 'POST');
+                $this->requireInboxToken($headers, $clientIp);
+                if (strlen($rawBody) > $this->config->int('max_send_body_bytes')) {
+                    throw new LineError(413, '内容が大きすぎます', 'E_SEND_BODY_TOO_BIG');
+                }
+                $body = $this->json($rawBody);
+                $service = $this->manualSend
+                    ?? new LineManualSendService($this->config, $this->store);
+                return [200, ['ok' => true] + $service->send($body)];
+            }
+
+            if ($route === '/reception/reset') {
+                $this->requireMethod($method, 'POST');
+                $this->requireInboxToken($headers, $clientIp);
+                if (strlen($rawBody) > $this->config->int('max_sync_bytes')) {
+                    throw new LineError(413, '内容が大きすぎます', 'E_RESET_BODY_TOO_BIG');
+                }
+                $body = $this->json($rawBody);
+                if (($body['confirmed'] ?? null) !== true) {
+                    throw new LineError(400, '停止解除の確認が必要です', 'E_RESET_NOT_CONFIRMED');
+                }
+                $lineUserId = is_string($body['lineUserId'] ?? null)
+                    ? trim($body['lineUserId'])
+                    : '';
+                $allowed = $this->config->str('ai_reply_allowed_user_id');
+                $sessionId = $this->config->str('ai_reply_session_id');
+                if ($lineUserId === '' || $allowed === '' || !hash_equals($allowed, $lineUserId)) {
+                    throw new LineError(403, 'この受付状態は解除できません', 'E_RESET_TARGET');
+                }
+                if ($sessionId === '' || strlen($sessionId) > 128) {
+                    throw new LineError(503, 'AI受付はまだ準備中です', 'E_RESET_CONFIG');
+                }
+                $lockKey = 'reception_' . LineStore::hashKey($lineUserId . "\0" . $sessionId);
+                $reset = $this->store->synchronized(
+                    $lockKey,
+                    fn (): bool => (new LineReceptionStateService(
+                        $this->store,
+                        $this->config->int('ai_reception_max_questions'),
+                    ))->reset($lineUserId, $sessionId)
+                );
+                if (!$reset) {
+                    throw new LineError(500, '停止状態を解除できません', 'E_RESET_WRITE');
+                }
+                return [200, ['ok' => true, 'reset' => true]];
+            }
+
+            if ($route === '/reception/mode') {
+                $this->requireInboxToken($headers, $clientIp);
+                $service = new LineReceptionControlService($this->config, $this->store);
+                if (strtoupper($method) === 'GET') {
+                    return [200, ['ok' => true] + $service->status()];
+                }
+                $this->requireMethod($method, 'POST');
+                if (strlen($rawBody) > $this->config->int('max_sync_bytes')) {
+                    throw new LineError(413, '内容が大きすぎます', 'E_RECEPTION_MODE_BODY_TOO_BIG');
+                }
+                $body = $this->json($rawBody);
+                if (!is_bool($body['enabled'] ?? null)) {
+                    throw new LineError(400, '受付AIの設定を確認してください', 'E_RECEPTION_MODE_VALUE');
+                }
+                if ($body['enabled'] === true && ($body['confirmed'] ?? null) !== true) {
+                    throw new LineError(400, '受付AIをONにする確認が必要です', 'E_RECEPTION_MODE_CONFIRM');
+                }
+                return [200, ['ok' => true] + $service->setEnabled($body['enabled'])];
             }
 
             return [404, ['ok' => false, 'message' => '入口が見つかりません']];

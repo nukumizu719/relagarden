@@ -19,6 +19,10 @@ require __DIR__ . '/../src/LineSignature.php';
 require __DIR__ . '/../src/LineProfile.php';
 require __DIR__ . '/../src/LineRateLimiter.php';
 require __DIR__ . '/../src/LineInboxService.php';
+require __DIR__ . '/../src/LineReceptionStateService.php';
+require __DIR__ . '/../src/LineReceptionControlService.php';
+require __DIR__ . '/../src/LineOwnerAiReplyService.php';
+require __DIR__ . '/../src/LineManualSendService.php';
 require __DIR__ . '/../src/LineWebhookService.php';
 require __DIR__ . '/../src/LineRouter.php';
 
@@ -28,6 +32,10 @@ use Relagarden\Line\LineConfigMissing;
 use Relagarden\Line\LineHeaders;
 use Relagarden\Line\LineStorageUnavailable;
 use Relagarden\Line\LineInboxService;
+use Relagarden\Line\LineManualSendService;
+use Relagarden\Line\LineOwnerAiReplyService;
+use Relagarden\Line\LineReceptionStateService;
+use Relagarden\Line\LineReceptionControlService;
 use Relagarden\Line\LineRouter;
 use Relagarden\Line\LineSignature;
 use Relagarden\Line\LineStore;
@@ -91,6 +99,7 @@ function testConfig(array $overrides = []): LineConfig
         'channel_secret' => SECRET,
         'inbox_token' => INBOX_TOKEN,
         'storage_dir' => sys_get_temp_dir() . '/relagarden-line-test-unused',
+        'ai_reply_runtime_control_required' => false,
     ]);
 }
 
@@ -158,6 +167,27 @@ function textEvent(
     ], JSON_UNESCAPED_UNICODE);
 }
 
+/** 写真メッセージ1件分。写真本体はテストにも入れない。 */
+function imageEvent(
+    string $eventId,
+    string $messageId,
+    string $userId,
+    int $timestampMs = 1756000000000,
+): string {
+    return json_encode([
+        'destination' => 'Uffffffffffffffffffffffffffffffff',
+        'events' => [[
+            'type' => 'message',
+            'webhookEventId' => $eventId,
+            'timestamp' => $timestampMs,
+            'mode' => 'active',
+            'source' => ['type' => 'user', 'userId' => $userId],
+            'replyToken' => 'dummy-reply-token',
+            'message' => ['id' => $messageId, 'type' => 'image'],
+        ]],
+    ], JSON_UNESCAPED_UNICODE);
+}
+
 /**
  * Webhookを1回送る。返り値は [status, payload]。
  *
@@ -174,12 +204,32 @@ function postWebhook(LineRouter $router, string $body, ?string $signature = null
     );
 }
 
-function routerWith(LineStore $store, array $names = [], array $configOverrides = []): LineRouter
+function routerWith(
+    LineStore $store,
+    array $names = [],
+    array $configOverrides = [],
+    ?LineOwnerAiReplyService $ownerAiReply = null,
+    ?LineManualSendService $manualSend = null,
+): LineRouter
 {
     return new LineRouter(
         testConfig($configOverrides),
         $store,
         new FakeLineProfile($names),
+        $ownerAiReply,
+        $manualSend,
+    );
+}
+
+/** @return array{0:int,1:array<string,mixed>} */
+function postSend(LineRouter $router, array $body, string $token = INBOX_TOKEN): array
+{
+    return $router->handle(
+        'POST',
+        '/send',
+        json_encode($body, JSON_UNESCAPED_UNICODE),
+        ['authorization' => 'Bearer ' . $token],
+        '203.0.113.10',
     );
 }
 
@@ -196,6 +246,42 @@ function postSync(LineRouter $router, array $ids, string $token = INBOX_TOKEN): 
         'POST',
         '/sync',
         json_encode(['ids' => $ids]),
+        ['authorization' => 'Bearer ' . $token],
+        '203.0.113.10',
+    );
+}
+
+/** @return array{0:int,1:array<string,mixed>} */
+function postReceptionReset(LineRouter $router, array $body, string $token = INBOX_TOKEN): array
+{
+    return $router->handle(
+        'POST',
+        '/reception/reset',
+        json_encode($body, JSON_UNESCAPED_UNICODE),
+        ['authorization' => 'Bearer ' . $token],
+        '203.0.113.10',
+    );
+}
+
+/** @return array{0:int,1:array<string,mixed>} */
+function getReceptionMode(LineRouter $router, string $token = INBOX_TOKEN): array
+{
+    return $router->handle(
+        'GET',
+        '/reception/mode',
+        '',
+        ['authorization' => 'Bearer ' . $token],
+        '203.0.113.10',
+    );
+}
+
+/** @return array{0:int,1:array<string,mixed>} */
+function postReceptionMode(LineRouter $router, array $body, string $token = INBOX_TOKEN): array
+{
+    return $router->handle(
+        'POST',
+        '/reception/mode',
+        json_encode($body, JSON_UNESCAPED_UNICODE),
         ['authorization' => 'Bearer ' . $token],
         '203.0.113.10',
     );
@@ -287,7 +373,7 @@ test('LINEの「検証」ボタン（イベントなし）でも200を返す', f
     assertSame(0, count($store->keys('inbox')));
 });
 
-test('写真やスタンプは受け取らない（中身も取りに行かない）', function (): void {
+test('写真は到着情報だけ受け取り、ほかの添付は受け取らない', function (): void {
     $store = freshStore();
     $router = routerWith($store);
     foreach (['image', 'sticker', 'video', 'location', 'file'] as $kind) {
@@ -302,9 +388,12 @@ test('写真やスタンプは受け取らない（中身も取りに行かな�
         ]);
         [$status, $payload] = postWebhook($router, $body);
         assertSame(200, $status, $kind);
-        assertSame(0, $payload['stored'], $kind . ' を受信箱へ入れてしまった');
+        assertSame($kind === 'image' ? 1 : 0, $payload['stored'], $kind);
     }
-    assertSame(0, count(getInbox($router)[1]['items']));
+    $items = getInbox($router)[1]['items'];
+    assertSame(1, count($items));
+    assertSame('image', $items[0]['kind']);
+    assertSame('', $items[0]['text'], '写真本文を保存している');
 });
 
 test('文字以外を読み捨てても、印は残って二度処理しない', function (): void {
@@ -969,8 +1058,8 @@ foreach (['/publish', '/status', '/unpublish', '/pairing'] as $route) {
     });
 }
 
-// ── 返信・送信を一切しないこと ──────────────────────────
-group('返信を送らないこと');
+// ── 本人限定AI返信 ──────────────────────────────────────
+group('本人限定AI返信');
 
 test('自動返信の入口が無い', function (): void {
     $store = freshStore();
@@ -985,9 +1074,8 @@ test('自動返信の入口が無い', function (): void {
     assertSame(404, $status);
 });
 
-test('LINEへ送信する呼び出しがコードに無い', function (): void {
+test('自動返信にはプッシュ・一斉送信・画像取得の呼び出しが無い', function (): void {
     $forbidden = [
-        '/v2/bot/message/reply',
         '/v2/bot/message/push',
         '/v2/bot/message/multicast',
         '/v2/bot/message/broadcast',
@@ -996,6 +1084,9 @@ test('LINEへ送信する呼び出しがコードに無い', function (): void {
         '/content',
     ];
     foreach (glob(__DIR__ . '/../src/*.php') ?: [] as $file) {
+        if (basename($file) === 'LineManualSendService.php') {
+            continue;
+        }
         $code = (string) file_get_contents($file);
         foreach ($forbidden as $needle) {
             assertTrue(
@@ -1004,6 +1095,819 @@ test('LINEへ送信する呼び出しがコードに無い', function (): void {
             );
         }
     }
+});
+
+test('手動送信にも一斉配信・複数配信の入口が無い', function (): void {
+    $code = (string) file_get_contents(__DIR__ . '/../src/LineManualSendService.php');
+    assertSame(1, substr_count($code, '/v2/bot/message/push'));
+    foreach (['/multicast', '/broadcast', '/narrowcast', '/content'] as $needle) {
+        assertTrue(!str_contains($code, $needle), $needle . ' が入っている');
+    }
+});
+
+test('初期状態では誰から届いても外部通信しない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $config = testConfig();
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 500, 'body' => ''];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    [$status] = postWebhook(
+        $router,
+        textEvent('EV-AI-OFF', 'MSG-AI-OFF', 'UOWNER00000000000000000000000000', '相談です')
+    );
+
+    assertSame(200, $status);
+    assertSame(0, count($calls));
+    assertSame(1, count($store->keys('inbox')), '受信箱への保存は止めない');
+});
+
+test('TEST_MODEがOFFならenabledでも外部通信しない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => false,
+        'ai_reply_allowed_user_id' => 'UOWNER00000000000000000000000000',
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 500, 'body' => ''];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    [$status] = postWebhook(
+        $router,
+        textEvent('EV-AI-NOTEST', 'MSG-AI-NOTEST', 'UOWNER00000000000000000000000000', '相談です')
+    );
+
+    assertSame(200, $status);
+    assertSame(0, count($calls));
+    assertTrue(str_contains(readLog($store), 'E_AI_TEST_MODE_OFF'));
+});
+
+test('許可した本人以外はGatewayにもLINE返信にも送らない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => 'UOWNER00000000000000000000000000',
+        'ai_reply_session_id' => 'owner-test-session-other',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{"reply":"返事"}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    [$status] = postWebhook(
+        $router,
+        textEvent('EV-AI-OTHER', 'MSG-AI-OTHER', 'UCUSTOMER000000000000000000000000', 'お客様です')
+    );
+
+    assertSame(200, $status);
+    assertSame(0, count($calls));
+    assertSame(1, count($store->keys('inbox')), '既存のお客様の本文は受信箱へ残す');
+});
+
+test('許可した本人だけGateway経由でreplyTokenへ返信する', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-test-session-safe',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            if ($url === 'https://gateway.example/v1/ask') {
+                return ['status' => 200, 'body' => '{"reply":"ASK_AREA"}'];
+            }
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    $body = textEvent('EV-AI-OWNER', 'MSG-AI-OWNER', $owner, '人工芝の相談です');
+    [$status] = postWebhook($router, $body);
+    [$retryStatus] = postWebhook($router, $body);
+
+    assertSame(200, $status);
+    assertSame(200, $retryStatus);
+    assertSame(2, count($calls));
+    assertSame('https://gateway.example/v1/ask', $calls[0]['url']);
+    assertSame('line_reception', $calls[0]['body']['feature'] ?? null);
+    assertTrue(str_contains($calls[0]['body']['prompt'] ?? '', '人工芝の相談です'));
+    assertTrue(str_contains($calls[0]['body']['prompt'] ?? '', '受付分類'));
+    assertTrue(!str_contains(json_encode($calls[0]['body']) ?: '', $owner), 'userIdをGatewayへ送っている');
+    assertSame('https://api.line.me/v2/bot/message/reply', $calls[1]['url']);
+    assertSame('dummy-reply-token', $calls[1]['body']['replyToken'] ?? null);
+    assertSame(
+        'お問い合わせありがとうございます。お庭のおおよその広さを教えていただけますか。',
+        $calls[1]['body']['messages'][0]['text'] ?? null,
+    );
+    assertTrue(!str_contains($calls[1]['url'], '/push'), 'プッシュ送信を使っている');
+    assertSame(1, count($store->keys('inbox')), '再送で本文が増えている');
+});
+
+test('設定が不足しても外部通信せず、受信箱は止めない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        // GatewayトークンとLINEトークンは意図的に空欄。
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    [$status] = postWebhook(
+        $router,
+        textEvent('EV-AI-CONFIG', 'MSG-AI-CONFIG', $owner, '設定不足の確認')
+    );
+
+    assertSame(200, $status);
+    assertSame(0, count($calls));
+    assertSame(1, count($store->keys('inbox')));
+    assertTrue(str_contains(readLog($store), 'E_AI_CONFIG'));
+});
+
+test('Gatewayが失敗しても受信箱へ残し、固定の引継ぎ文だけを試す', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-test-session-fail',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 503, 'body' => '{"ok":false}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    [$status] = postWebhook(
+        $router,
+        textEvent('EV-AI-FAIL', 'MSG-AI-FAIL', $owner, '人工芝について相談です')
+    );
+
+    assertSame(200, $status);
+    assertSame(2, count($calls), 'Gateway失敗後の固定引継ぎを試していない');
+    assertSame('https://api.line.me/v2/bot/message/reply', $calls[1]['url']);
+    assertSame(
+        'お問い合わせありがとうございます。内容を確認し、担当者からご連絡いたします。少々お待ちください。',
+        $calls[1]['body']['messages'][0]['text'] ?? null,
+    );
+    assertSame(1, count($store->keys('inbox')), '手動返信用の本文が残っていない');
+    assertTrue(str_contains(readLog($store), 'E_AI_GATEWAY'));
+});
+
+test('AIが選択肢外を返したら引継ぎ、次のイベントでは返信しない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-test-session-once',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return str_contains($url, '/ask')
+                ? ['status' => 200, 'body' => '{"reply":"返事"}']
+                : ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook($router, textEvent('EV-AI-LIMIT-1', 'MSG-AI-LIMIT-1', $owner, '人工芝について相談です'));
+    postWebhook($router, textEvent('EV-AI-LIMIT-2', 'MSG-AI-LIMIT-2', $owner, '2件目', 1756000001000));
+
+    assertSame(2, count($calls), '2件目も外部通信している');
+    assertSame(2, count($store->keys('inbox')), '2件目の本文が受信箱へ残っていない');
+    assertTrue(str_contains(readLog($store), 'I_AI_RECEPTION_STOPPED'));
+});
+
+test('料金や日程の相談はAIへ送らず固定文で担当者へ引き継ぐ', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-test-session-handoff',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook(
+        $router,
+        textEvent('EV-AI-HANDOFF', 'MSG-AI-HANDOFF', $owner, '料金はいくらですか')
+    );
+
+    assertSame(1, count($calls));
+    assertSame('https://api.line.me/v2/bot/message/reply', $calls[0]['url']);
+    assertSame(
+        'お問い合わせありがとうございます。内容を確認し、担当者からご連絡いたします。少々お待ちください。',
+        $calls[0]['body']['messages'][0]['text'] ?? null,
+    );
+    assertTrue(str_contains(readLog($store), 'I_AI_RECEPTION_HANDOFF'));
+});
+
+test('危険な相談表現の違いもAIへ渡さない', function (): void {
+    $owner = 'UOWNER00000000000000000000000000';
+    $messages = ['見積をください', '費用を知りたい', '来週できますか', '保証はありますか', '弁償してください'];
+    foreach ($messages as $index => $message) {
+        $store = freshStore();
+        $calls = [];
+        $config = testConfig([
+            'ai_reply_enabled' => true,
+            'ai_reply_test_mode' => true,
+            'ai_reply_allowed_user_id' => $owner,
+            'ai_reply_session_id' => 'owner-risk-variant-' . $index,
+            'ai_gateway_base_url' => 'https://gateway.example/v1',
+            'ai_gateway_token' => str_repeat('g', 64),
+            'channel_access_token' => str_repeat('l', 64),
+            'ai_reply_daily_limit' => 4,
+        ]);
+        $reply = new LineOwnerAiReplyService(
+            $config,
+            $store,
+            function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+                $calls[] = compact('url', 'headers', 'body', 'timeout');
+                return ['status' => 200, 'body' => '{}'];
+            },
+        );
+        $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+        postWebhook(
+            $router,
+            textEvent('EV-AI-RISK-' . $index, 'MSG-AI-RISK-' . $index, $owner, $message)
+        );
+
+        assertSame(1, count($calls), $message . ' がGatewayへ送られている');
+        assertSame('https://api.line.me/v2/bot/message/reply', $calls[0]['url']);
+    }
+});
+
+test('いつもありがとうございますは日程相談と誤判定しない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-thanks-not-schedule',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return str_contains($url, '/ask')
+                ? ['status' => 200, 'body' => '{"reply":"ACK_HANDOFF"}']
+                : ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook(
+        $router,
+        textEvent('EV-AI-THANKS', 'MSG-AI-THANKS', $owner, 'いつもありがとうございます')
+    );
+
+    assertSame('https://gateway.example/v1/ask', $calls[0]['url'] ?? null);
+});
+
+test('受付形式外の質問・依頼・施工可否はAIへ渡さず固定引継ぎにする', function (): void {
+    $owner = 'UOWNER00000000000000000000000000';
+    $messages = [
+        'これは何ですか？',
+        '人工芝を施工できますか？',
+        '庭を修理してください',
+        '今日来られますか？',
+        '人工芝について教えて',
+    ];
+    foreach ($messages as $index => $message) {
+        $store = freshStore();
+        $calls = [];
+        $config = testConfig([
+            'ai_reply_enabled' => true,
+            'ai_reply_test_mode' => true,
+            'ai_reply_allowed_user_id' => $owner,
+            'ai_reply_session_id' => 'owner-unsafe-initial-' . $index,
+            'ai_gateway_base_url' => 'https://gateway.example/v1',
+            'ai_gateway_token' => str_repeat('g', 64),
+            'channel_access_token' => str_repeat('l', 64),
+            'ai_reply_daily_limit' => 4,
+        ]);
+        $reply = new LineOwnerAiReplyService(
+            $config,
+            $store,
+            function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+                $calls[] = compact('url', 'headers', 'body', 'timeout');
+                return ['status' => 200, 'body' => '{}'];
+            },
+        );
+        $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+        postWebhook($router, textEvent('EV-UNSAFE-' . $index, 'MSG-UNSAFE-' . $index, $owner, $message));
+
+        assertSame(1, count($calls), $message . ' で固定引継ぎ以外の通信がある');
+        assertSame('https://api.line.me/v2/bot/message/reply', $calls[0]['url']);
+        [, $inbox] = getInbox($router);
+        assertSame(true, $inbox['items'][0]['needsHuman']);
+        assertSame('UNSAFE_INPUT', $inbox['items'][0]['reasonCode']);
+    }
+});
+
+test('質問中も項目ごとの形式外回答をAIへ渡さない', function (): void {
+    $owner = 'UOWNER00000000000000000000000000';
+    $cases = [
+        ['ASK_LOCATION', 'どこまで来られますか？'],
+        ['ASK_AREA', '広さは多分です'],
+        ['ASK_CONDITION', '砂利ですが今日来られますか？'],
+        ['ASK_PHOTO', '写真送れますか？'],
+        ['ASK_TIMING', '今日来られますか？'],
+    ];
+    foreach ($cases as $index => [$decision, $answer]) {
+        $store = freshStore();
+        $calls = [];
+        $config = testConfig([
+            'ai_reply_enabled' => true,
+            'ai_reply_test_mode' => true,
+            'ai_reply_allowed_user_id' => $owner,
+            'ai_reply_session_id' => 'owner-unsafe-answer-' . $index,
+            'ai_gateway_base_url' => 'https://gateway.example/v1',
+            'ai_gateway_token' => str_repeat('g', 64),
+            'channel_access_token' => str_repeat('l', 64),
+            'ai_reply_daily_limit' => 4,
+        ]);
+        $reply = new LineOwnerAiReplyService(
+            $config,
+            $store,
+            function (string $url, array $headers, array $body, int $timeout) use (&$calls, $decision): array {
+                $calls[] = compact('url', 'headers', 'body', 'timeout');
+                return str_contains($url, '/ask')
+                    ? ['status' => 200, 'body' => json_encode(['reply' => $decision])]
+                    : ['status' => 200, 'body' => '{}'];
+            },
+        );
+        $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+        postWebhook($router, textEvent('EV-SAFE-START-' . $index, 'MSG-SAFE-START-' . $index, $owner, '人工芝について相談です'));
+        postWebhook($router, textEvent('EV-UNSAFE-ANSWER-' . $index, 'MSG-UNSAFE-ANSWER-' . $index, $owner, $answer, 1756000001000));
+
+        $gatewayCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/ask')));
+        assertSame(1, count($gatewayCalls), $answer . ' がGatewayへ送られている');
+        [, $inbox] = getInbox($router);
+        assertSame(true, $inbox['items'][1]['needsHuman']);
+        assertSame('UNSAFE_INPUT', $inbox['items'][1]['reasonCode']);
+    }
+});
+
+test('AI文に金額や確約が混ざったら送らず固定引継ぎ文へ置き換える', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-test-session-output-guard',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return str_contains($url, '/ask')
+                ? ['status' => 200, 'body' => '{"reply":"施工できます。料金は5000円です。"}']
+                : ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook(
+        $router,
+        textEvent('EV-AI-OUTPUT-GUARD', 'MSG-AI-OUTPUT-GUARD', $owner, '人工芝について相談したいです')
+    );
+
+    assertSame(2, count($calls));
+    assertSame(
+        'お問い合わせありがとうございます。内容を確認し、担当者からご連絡いたします。少々お待ちください。',
+        $calls[1]['body']['messages'][0]['text'] ?? null,
+    );
+    assertTrue(str_contains(readLog($store), 'E_AI_RESPONSE'));
+});
+
+test('最大3質問で地域・広さ・写真を集め、担当者へ引き継ぐ', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $gatewayReplies = ['ASK_LOCATION', 'ASK_AREA', 'ASK_PHOTO'];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-multiturn-three-questions',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls, &$gatewayReplies): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            if (str_contains($url, '/ask')) {
+                $decision = array_shift($gatewayReplies) ?? 'ACK_HANDOFF';
+                return ['status' => 200, 'body' => json_encode(['reply' => $decision])];
+            }
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+
+    postWebhook($router, textEvent('EV-MT-1', 'MSG-MT-1', $owner, '人工芝について相談です', 1756000000000));
+    postWebhook($router, textEvent('EV-MT-2', 'MSG-MT-2', $owner, '岡崎市です', 1756000001000));
+    postWebhook($router, textEvent('EV-MT-3', 'MSG-MT-3', $owner, '約30㎡です', 1756000002000));
+    postWebhook($router, imageEvent('EV-MT-4', 'MSG-MT-4', $owner, 1756000003000));
+
+    $gatewayCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/ask')));
+    $lineCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/message/reply')));
+    assertSame(3, count($gatewayCalls), '質問3回を超えてGatewayを呼んでいる');
+    assertSame(4, count($lineCalls), '質問3回と引継ぎ1回以外を送っている');
+    foreach ($calls as $call) {
+        assertTrue(!str_contains($call['url'], '/push'), 'Push送信を使っている');
+        assertTrue(!str_contains($call['url'], '/content'), '写真本体を取得している');
+    }
+
+    [, $inbox] = getInbox($router);
+    assertSame(4, count($inbox['items']));
+    $latest = $inbox['items'][3];
+    assertSame('image', $latest['kind']);
+    assertSame('', $latest['text']);
+    assertSame(true, $latest['needsHuman']);
+    assertSame('MAX_QUESTIONS', $latest['reasonCode']);
+    assertSame('岡崎市です', $latest['collectedFields']['region']);
+    assertSame('約30㎡です', $latest['collectedFields']['area']);
+    assertSame('received', $latest['collectedFields']['photo']);
+    assertSame('', $latest['collectedFields']['condition']);
+    assertSame('', $latest['collectedFields']['preferredTiming']);
+});
+
+test('同じ本人の並行受付でも質問数は3回を超えない', function (): void {
+    if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')) {
+        // 本番コードのfinally解放だけは、pcntlが無いPHPでも確認する。
+        $store = freshStore();
+        try {
+            $store->synchronized('fallback-lock-test', static function (): void {
+                throw new RuntimeException('expected');
+            });
+        } catch (RuntimeException $e) {
+            assertSame('expected', $e->getMessage());
+        }
+        assertSame('released', $store->synchronized('fallback-lock-test', static fn (): string => 'released'));
+        return;
+    }
+
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $sessionId = 'owner-concurrent-question-limit';
+    $states = new LineReceptionStateService($store, 3);
+    $state = $states->load($owner, $sessionId);
+    $state = $states->capture($states->ask($state, 'condition'), 'text', '砂利です');
+    $state = $states->capture($states->ask($state, 'area'), 'text', '30㎡です');
+    assertTrue($states->save($owner, $sessionId, $state));
+
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => $sessionId,
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $callFile = storageDirOf($store) . '/parallel-calls.log';
+    $children = [];
+    for ($index = 0; $index < 4; $index++) {
+        $pid = pcntl_fork();
+        assertTrue($pid >= 0, '子プロセスを開始できない');
+        if ($pid === 0) {
+            $reply = new LineOwnerAiReplyService(
+                $config,
+                $store,
+                static function (string $url, array $headers, array $body, int $timeout) use ($callFile): array {
+                    if (str_contains($url, '/ask')) {
+                        file_put_contents($callFile, "G\n", FILE_APPEND | LOCK_EX);
+                        usleep(150000);
+                        return ['status' => 200, 'body' => '{"reply":"ASK_LOCATION"}'];
+                    }
+                    file_put_contents($callFile, "L\n", FILE_APPEND | LOCK_EX);
+                    return ['status' => 200, 'body' => '{}'];
+                },
+            );
+            $reply->replyIfAllowed($owner, '人工芝について相談です', 'parallel-reply-' . $index);
+            exit(0);
+        }
+        $children[] = $pid;
+    }
+    foreach ($children as $pid) {
+        $status = 0;
+        pcntl_waitpid($pid, $status);
+        assertTrue(pcntl_wifexited($status) && pcntl_wexitstatus($status) === 0, '並行受付が異常終了した');
+    }
+
+    $calls = is_file($callFile) ? file($callFile, FILE_IGNORE_NEW_LINES) : [];
+    assertSame(1, count(array_filter($calls, static fn (string $call): bool => $call === 'G')));
+    $saved = $states->load($owner, $sessionId);
+    assertSame(3, $saved['questionsAsked']);
+    assertSame('handoff', $saved['status']);
+    assertSame('UNSAFE_INPUT', $saved['reasonCode']);
+});
+
+test('引継ぎ後の新着は保存するがGatewayにもLINEにも送らない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-handoff-stays-stopped',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook($router, textEvent('EV-STOP-1', 'MSG-STOP-1', $owner, '料金はいくらですか'));
+    $afterHandoff = count($calls);
+    postWebhook($router, textEvent('EV-STOP-2', 'MSG-STOP-2', $owner, '岡崎市です', 1756000001000));
+
+    assertSame(1, $afterHandoff);
+    assertSame($afterHandoff, count($calls), '引継ぎ後も外部通信している');
+    [, $inbox] = getInbox($router);
+    assertSame(2, count($inbox['items']));
+    assertSame(true, $inbox['items'][1]['needsHuman']);
+    assertSame('PRICE', $inbox['items'][1]['reasonCode']);
+});
+
+test('AI対象外の通常受信はAI引継ぎにせず固定5項目を返す', function (): void {
+    $store = freshStore();
+    $router = routerWith($store);
+    postWebhook($router, textEvent('EV-MANUAL-META', 'MSG-MANUAL-META', 'U10101010101010101010101010101010', '相談です'));
+    [, $inbox] = getInbox($router);
+    $item = $inbox['items'][0];
+    assertSame(false, $item['needsHuman']);
+    assertSame('MANUAL_ONLY', $item['reasonCode']);
+    assertSame(
+        ['region', 'area', 'condition', 'photo', 'preferredTiming'],
+        array_keys($item['collectedFields']),
+    );
+});
+
+test('受付状態にはreplyTokenと生のuserIdを保存しない', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-private-state',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        static function (string $url, array $headers, array $body, int $timeout): array {
+            return str_contains($url, '/ask')
+                ? ['status' => 200, 'body' => '{"reply":"ASK_LOCATION"}']
+                : ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook($router, textEvent('EV-PRIVATE', 'MSG-PRIVATE', $owner, '人工芝について相談です'));
+
+    $keys = $store->keys('reception');
+    assertSame(1, count($keys));
+    assertTrue(!str_contains($keys[0], $owner), 'userIdを状態の鍵へ出している');
+    $saved = json_encode($store->get('reception', $keys[0]), JSON_UNESCAPED_UNICODE) ?: '';
+    assertTrue(!str_contains($saved, $owner), 'userIdを状態本文へ保存している');
+    assertTrue(!str_contains($saved, 'dummy-reply-token'), 'replyTokenを状態へ保存している');
+});
+
+test('現状・希望時期・写真なしも固定5項目へ安全に保存できる', function (): void {
+    $states = new LineReceptionStateService(freshStore(), 3);
+    $state = $states->load('U-state-unit', 'session-state-unit');
+    $state = $states->ask($state, 'condition');
+    $state = $states->capture($state, 'text', '砂利が敷いてあります');
+    $state = $states->ask($state, 'preferredTiming');
+    $state = $states->capture($state, 'text', '11月ごろ希望です');
+    $state = $states->ask($state, 'photo');
+    $state = $states->capture($state, 'text', '写真はありません');
+    $meta = $states->metadata($state);
+
+    assertSame('砂利が敷いてあります', $meta['collectedFields']['condition']);
+    assertSame('11月ごろ希望です', $meta['collectedFields']['preferredTiming']);
+    assertSame('unavailable', $meta['collectedFields']['photo']);
+    assertTrue($states->reachedQuestionLimit($state));
+});
+
+test('Reply APIが失敗したら人対応へ切り替え、次の新着へ自動返信しない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-line-reply-failure',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return str_contains($url, '/ask')
+                ? ['status' => 200, 'body' => '{"reply":"ASK_LOCATION"}']
+                : ['status' => 500, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook($router, textEvent('EV-LINE-FAIL-1', 'MSG-LINE-FAIL-1', $owner, '人工芝について相談です'));
+    $afterFailure = count($calls);
+    postWebhook($router, textEvent('EV-LINE-FAIL-2', 'MSG-LINE-FAIL-2', $owner, '岡崎市です', 1756000001000));
+
+    assertSame(2, $afterFailure);
+    assertSame($afterFailure, count($calls), '返信失敗後も外部通信している');
+    [, $inbox] = getInbox($router);
+    assertSame(true, $inbox['items'][0]['needsHuman']);
+    assertSame('REPLY_FAILED', $inbox['items'][0]['reasonCode']);
+    assertSame('REPLY_FAILED', $inbox['items'][1]['reasonCode']);
+});
+
+test('受付状態を書けないと別の停止印を残し、次の新着でAIを再開しない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-state-write-fail-stop',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{"reply":"ASK_LOCATION"}'];
+        },
+    );
+    $receptionDir = storageDirOf($store) . '/reception';
+    chmod($receptionDir, 0500);
+    try {
+        $first = $reply->replyIfAllowed($owner, '人工芝について相談です', 'state-fail-1');
+    } finally {
+        chmod($receptionDir, 0700);
+    }
+    $second = $reply->replyIfAllowed($owner, '人工芝について相談です', 'state-fail-2');
+
+    assertSame(true, $first['needsHuman']);
+    assertSame('STATE_WRITE_FAILED', $first['reasonCode']);
+    assertSame(true, $second['needsHuman']);
+    assertSame('STATE_WRITE_FAILED', $second['reasonCode']);
+    assertSame(0, count($calls), '状態保存失敗後に外部通信している');
+});
+
+test('受付ロックを作れないと別の停止印を残し、次の新着でAIを再開しない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-lock-fail-stop',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{"reply":"ASK_LOCATION"}'];
+        },
+    );
+    $locksDir = storageDirOf($store) . '/locks';
+    chmod($locksDir, 0500);
+    try {
+        $first = $reply->replyIfAllowed($owner, '人工芝について相談です', 'lock-fail-1');
+    } finally {
+        chmod($locksDir, 0700);
+    }
+    $second = $reply->replyIfAllowed($owner, '人工芝について相談です', 'lock-fail-2');
+
+    assertSame(true, $first['needsHuman']);
+    assertSame('LOCK_FAILED', $first['reasonCode']);
+    assertSame(true, $second['needsHuman']);
+    assertSame('LOCK_FAILED', $second['reasonCode']);
+    assertSame(0, count($calls), 'ロック失敗後に外部通信している');
 });
 
 test('replyToken を受け取っても保存しない', function (): void {
@@ -1020,6 +1924,511 @@ test('replyToken を受け取っても保存しない', function (): void {
             'replyTokenが保存内容に混ざっている'
         );
     }
+});
+
+// ── 本人限定AI受付の停止解除 ────────────────────────────
+group('本人限定AI受付の停止解除');
+
+test('合言葉・本人完全一致・明示確認が無ければ停止解除できない', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-reset-auth',
+        'ai_reception_max_questions' => 3,
+    ]);
+    $states = new LineReceptionStateService($store, 3);
+    $state = $states->handoff($states->load($owner, 'owner-reset-auth'), 'PRICE');
+    assertTrue($states->save($owner, 'owner-reset-auth', $state));
+    $router = new LineRouter($config, $store, new FakeLineProfile());
+
+    [$missingToken] = postReceptionReset($router, ['lineUserId' => $owner, 'confirmed' => true], '');
+    [$wrongOwner] = postReceptionReset($router, ['lineUserId' => 'UOTHER00000000000000000000000000', 'confirmed' => true]);
+    [$notConfirmed] = postReceptionReset($router, ['lineUserId' => $owner, 'confirmed' => false]);
+
+    assertSame(401, $missingToken);
+    assertSame(403, $wrongOwner);
+    assertSame(400, $notConfirmed);
+    assertSame('handoff', $states->load($owner, 'owner-reset-auth')['status']);
+});
+
+test('停止解除は許可本人の現在sessionだけを初期化する', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $currentSession = 'owner-reset-current';
+    $oldSession = 'owner-reset-old';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => $currentSession,
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $states = new LineReceptionStateService($store, 3);
+    assertTrue($states->save(
+        $owner,
+        $currentSession,
+        $states->handoff($states->load($owner, $currentSession), 'PRICE'),
+    ));
+    assertTrue($states->save(
+        $owner,
+        $oldSession,
+        $states->handoff($states->load($owner, $oldSession), 'COMPLAINT'),
+    ));
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return str_contains($url, '/ask')
+                ? ['status' => 200, 'body' => '{"reply":"ASK_LOCATION"}']
+                : ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+
+    [$status, $payload] = postReceptionReset($router, [
+        'lineUserId' => $owner,
+        'confirmed' => true,
+    ]);
+
+    assertSame(200, $status);
+    assertSame(true, $payload['reset']);
+    assertSame('collecting', $states->load($owner, $currentSession)['status']);
+    assertSame('', $states->load($owner, $currentSession)['reasonCode']);
+    assertSame('handoff', $states->load($owner, $oldSession)['status']);
+    assertSame('COMPLAINT', $states->load($owner, $oldSession)['reasonCode']);
+    assertSame(1, count($store->keys('reception')), '過去sessionまで消している');
+
+    postWebhook($router, textEvent('EV-RESET-RESUME', 'MSG-RESET-RESUME', $owner, '人工芝について相談です'));
+    assertSame(2, count($calls), '停止解除後にGatewayとReply APIの受付が再開していない');
+    assertSame('collecting', $states->load($owner, $currentSession)['status']);
+    assertSame(1, $states->load($owner, $currentSession)['questionsAsked']);
+});
+
+test('停止解除しても本日4回の安全上限は増やさない', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $sessionId = 'owner-reset-keeps-daily-limit';
+    $calls = [];
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => $sessionId,
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $states = new LineReceptionStateService($store, 3);
+    assertTrue($states->save(
+        $owner,
+        $sessionId,
+        $states->handoff($states->load($owner, $sessionId), 'MAX_QUESTIONS'),
+    ));
+    $limiter = new \Relagarden\Line\LineRateLimiter($store, 86400);
+    for ($i = 0; $i < 4; $i++) {
+        $limiter->hit('ai_owner_' . LineStore::hashKey($owner), 4, '上限');
+    }
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{"reply":"ASK_LOCATION"}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    [$status] = postReceptionReset($router, [
+        'lineUserId' => $owner,
+        'confirmed' => true,
+    ]);
+    assertSame(200, $status);
+
+    postWebhook($router, textEvent('EV-RESET-LIMIT', 'MSG-RESET-LIMIT', $owner, '人工芝について相談です'));
+    assertSame(0, count($calls), '停止解除で本日の安全上限を増やしている');
+    assertSame('LOCAL_LIMIT', $states->load($owner, $sessionId)['reasonCode']);
+});
+
+// ── アプリの受付AIスイッチ ──────────────────────────────
+group('アプリの受付AIスイッチ');
+
+test('受付AIは設定がそろっていても初期状態OFF', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_runtime_control_required' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'app-switch-session',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $router = new LineRouter($config, $store, new FakeLineProfile());
+    [$status, $payload] = getReceptionMode($router);
+    assertSame(200, $status);
+    assertSame(true, $payload['available']);
+    assertSame(false, $payload['enabled']);
+    assertSame(true, $payload['testOnly']);
+});
+
+test('明示確認してON、OFFは即時に反映しsession変更でOFFへ戻る', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $base = [
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_runtime_control_required' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'app-switch-current',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+    ];
+    $router = new LineRouter(testConfig($base), $store, new FakeLineProfile());
+    [$notConfirmed] = postReceptionMode($router, ['enabled' => true, 'confirmed' => false]);
+    [$onStatus, $on] = postReceptionMode($router, ['enabled' => true, 'confirmed' => true]);
+    assertSame(400, $notConfirmed);
+    assertSame(200, $onStatus);
+    assertSame(true, $on['enabled']);
+
+    $changed = new LineRouter(
+        testConfig(['ai_reply_session_id' => 'app-switch-new'] + $base),
+        $store,
+        new FakeLineProfile(),
+    );
+    assertSame(false, getReceptionMode($changed)[1]['enabled']);
+
+    [$offStatus, $off] = postReceptionMode($router, ['enabled' => false, 'confirmed' => true]);
+    assertSame(200, $offStatus);
+    assertSame(false, $off['enabled']);
+});
+
+test('アプリ側OFFでは許可本人から届いてもAI外部通信しない', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_runtime_control_required' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'app-switch-webhook',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 3,
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{"reply":"ASK_LOCATION"}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook($router, textEvent('EV-SWITCH-OFF', 'MSG-SWITCH-OFF', $owner, '人工芝について相談です'));
+    assertSame(0, count($calls));
+
+    postReceptionMode($router, ['enabled' => true, 'confirmed' => true]);
+    postWebhook($router, textEvent('EV-SWITCH-ON', 'MSG-SWITCH-ON', $owner, '人工芝について相談です'));
+    assertSame(2, count($calls), 'ON後にGatewayとLINE reply APIへつながっていない');
+});
+
+// ── アプリで確認した後の本人限定送信 ────────────────────
+group('確認後の本人限定LINE送信');
+
+test('合言葉が無ければ送信入口を使えない', function (): void {
+    $store = freshStore();
+    $router = routerWith($store);
+    [$status] = $router->handle(
+        'POST',
+        '/send',
+        '{}',
+        [],
+        '203.0.113.10',
+    );
+    assertSame(401, $status);
+});
+
+test('初期状態では手動送信も止まっている', function (): void {
+    $store = freshStore();
+    $router = routerWith($store);
+    [$status] = postSend($router, [
+        'confirmed' => true,
+        'lineUserId' => 'UOWNER00000000000000000000000000',
+        'text' => 'テスト返信',
+        'requestId' => 'request_manual_off_001',
+    ]);
+    assertSame(503, $status);
+    assertSame(0, count($store->keys('requests')));
+});
+
+test('安全スイッチはPHPの真偽値trueだけをONとして扱う', function (): void {
+    assertSame(true, testConfig(['manual_send_enabled' => true])->bool('manual_send_enabled'));
+    assertSame(false, testConfig(['manual_send_enabled' => false])->bool('manual_send_enabled'));
+    assertSame(false, testConfig(['manual_send_enabled' => 'true'])->bool('manual_send_enabled'));
+    assertSame(false, testConfig(['manual_send_enabled' => 'false'])->bool('manual_send_enabled'));
+    assertSame(false, testConfig(['manual_send_enabled' => 1])->bool('manual_send_enabled'));
+    assertSame(false, testConfig(['manual_send_enabled' => 0])->bool('manual_send_enabled'));
+});
+
+test('TEST_MODEがOFFなら手動送信しない', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $calls = [];
+    $config = testConfig([
+        'manual_send_enabled' => true,
+        'manual_send_test_mode' => false,
+        'manual_send_allowed_user_id' => $owner,
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $service = new LineManualSendService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), null, $service);
+    [$status] = postSend($router, [
+        'confirmed' => true,
+        'lineUserId' => $owner,
+        'text' => 'テスト返信',
+        'requestId' => 'request_manual_notest_001',
+    ]);
+    assertSame(403, $status);
+    assertSame(0, count($calls));
+});
+
+test('confirmedが真でなければ送信しない', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $calls = [];
+    $config = testConfig([
+        'manual_send_enabled' => true,
+        'manual_send_test_mode' => true,
+        'manual_send_allowed_user_id' => $owner,
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $service = new LineManualSendService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), null, $service);
+    [$missingStatus] = postSend($router, [
+        'lineUserId' => $owner,
+        'text' => '未確認',
+        'requestId' => 'request_manual_unconfirmed_001',
+    ]);
+    [$stringStatus] = postSend($router, [
+        'confirmed' => 'true',
+        'lineUserId' => $owner,
+        'text' => '文字列は不可',
+        'requestId' => 'request_manual_unconfirmed_002',
+    ]);
+    assertSame(400, $missingStatus);
+    assertSame(400, $stringStatus);
+    assertSame(0, count($calls));
+});
+
+test('許可した本人以外には送信しない', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $calls = [];
+    $config = testConfig([
+        'manual_send_enabled' => true,
+        'manual_send_test_mode' => true,
+        'manual_send_allowed_user_id' => $owner,
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $service = new LineManualSendService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), null, $service);
+    [$status] = postSend($router, [
+        'confirmed' => true,
+        'lineUserId' => 'UCUSTOMER000000000000000000000000',
+        'text' => '誤送信してはいけない文面',
+        'requestId' => 'request_manual_other_001',
+    ]);
+    assertSame(403, $status);
+    assertSame(0, count($calls));
+});
+
+test('確認済みの本人向け文字を1件だけpush送信する', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $calls = [];
+    $config = testConfig([
+        'manual_send_enabled' => true,
+        'manual_send_test_mode' => true,
+        'manual_send_allowed_user_id' => $owner,
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $service = new LineManualSendService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), null, $service);
+    [$status, $payload] = postSend($router, [
+        'confirmed' => true,
+        'lineUserId' => $owner,
+        'text' => '承知しました。よろしくお願いいたします。',
+        'requestId' => 'request_manual_success_001',
+    ]);
+
+    assertSame(200, $status);
+    assertSame(true, $payload['sent'] ?? null);
+    assertSame(false, $payload['duplicate'] ?? null);
+    assertSame(false, $payload['uncertain'] ?? null);
+    assertSame(1, count($calls));
+    assertSame('https://api.line.me/v2/bot/message/push', $calls[0]['url']);
+    assertSame($owner, $calls[0]['body']['to'] ?? null);
+    assertSame('text', $calls[0]['body']['messages'][0]['type'] ?? null);
+    assertSame('承知しました。よろしくお願いいたします。', $calls[0]['body']['messages'][0]['text'] ?? null);
+    assertSame(1, count($calls[0]['body']['messages'] ?? []));
+
+    $requestRecords = $store->keys('requests');
+    assertSame(1, count($requestRecords));
+    $saved = json_encode($store->get('requests', $requestRecords[0]), JSON_UNESCAPED_UNICODE) ?: '';
+    assertTrue(!str_contains($saved, $owner), '送信先を送信記録へ残している');
+    assertTrue(!str_contains($saved, '承知しました'), '本文を送信記録へ残している');
+});
+
+test('同じrequestIdを再送してもLINEへは1回しか送らない', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $calls = [];
+    $config = testConfig([
+        'manual_send_enabled' => true,
+        'manual_send_test_mode' => true,
+        'manual_send_allowed_user_id' => $owner,
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $service = new LineManualSendService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), null, $service);
+    $body = [
+        'confirmed' => true,
+        'lineUserId' => $owner,
+        'text' => '二重送信しない',
+        'requestId' => 'request_manual_duplicate_001',
+    ];
+    [$firstStatus, $first] = postSend($router, $body);
+    [$secondStatus, $second] = postSend($router, $body);
+    assertSame(200, $firstStatus);
+    assertSame(true, $first['sent'] ?? null);
+    assertSame(200, $secondStatus);
+    assertSame(true, $second['duplicate'] ?? null);
+    assertSame(true, $second['sent'] ?? null);
+    assertSame(false, $second['uncertain'] ?? null);
+    assertSame(1, count($calls));
+});
+
+test('LINEが失敗を返した場合は同じrequestIdで再試行できる', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $calls = [];
+    $config = testConfig([
+        'manual_send_enabled' => true,
+        'manual_send_test_mode' => true,
+        'manual_send_allowed_user_id' => $owner,
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $service = new LineManualSendService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return count($calls) === 1
+                ? ['status' => 503, 'body' => '{}']
+                : ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), null, $service);
+    $body = [
+        'confirmed' => true,
+        'lineUserId' => $owner,
+        'text' => '失敗後の再試行',
+        'requestId' => 'request_manual_retry_001',
+    ];
+    [$failedStatus] = postSend($router, $body);
+    [$retryStatus, $retry] = postSend($router, $body);
+    assertSame(502, $failedStatus);
+    assertSame(200, $retryStatus);
+    assertSame(true, $retry['sent'] ?? null);
+    assertSame(2, count($calls));
+});
+
+test('通信結果が不明な場合は同じrequestIdの二重送信を止める', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $calls = 0;
+    $config = testConfig([
+        'manual_send_enabled' => true,
+        'manual_send_test_mode' => true,
+        'manual_send_allowed_user_id' => $owner,
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $service = new LineManualSendService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls++;
+            throw new RuntimeException('通信が途中で切れた想定');
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), null, $service);
+    $body = [
+        'confirmed' => true,
+        'lineUserId' => $owner,
+        'text' => '結果不明時の二重送信防止',
+        'requestId' => 'request_manual_uncertain_001',
+    ];
+    [$firstStatus] = postSend($router, $body);
+    [$secondStatus, $second] = postSend($router, $body);
+    assertSame(502, $firstStatus);
+    assertSame(200, $secondStatus);
+    assertSame(true, $second['duplicate'] ?? null);
+    assertSame(false, $second['sent'] ?? null);
+    assertSame(true, $second['uncertain'] ?? null);
+    assertSame(1, $calls, '結果不明なのに同じ要求を再送した');
 });
 
 // ── 合言葉の受け取り ────────────────────────────────────

@@ -36,7 +36,7 @@ final class LineStore
         if ($this->dir === '') {
             throw new LineStorageUnavailable('E_STORAGE_PATH');
         }
-        foreach (['', '/events', '/inbox', '/rate', '/logs'] as $sub) {
+        foreach (['', '/events', '/inbox', '/rate', '/requests', '/reception', '/reception_stops', '/controls', '/locks', '/logs'] as $sub) {
             $path = $this->dir . $sub;
             if (!is_dir($path) && !@mkdir($path, 0700, true) && !is_dir($path)) {
                 throw new LineStorageUnavailable('E_STORAGE_MKDIR');
@@ -99,6 +99,74 @@ final class LineStore
             return false;
         }
         return true;
+    }
+
+    /**
+     * 同じ鍵を最初の1回だけ保存する。
+     *
+     * 送信ボタンの二度押しや通信再試行が同時に来ても、同じrequestIdで
+     * 外部送信へ進めるのは1つだけにする。`x` は既存ファイルを上書きしない。
+     *
+     * @param array<string,mixed> $data
+     */
+    public function claim(string $bucket, string $key, array $data): bool
+    {
+        $path = $this->pathFor($bucket, $key);
+        if ($path === null) {
+            return false;
+        }
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            return false;
+        }
+        $handle = @fopen($path, 'x');
+        if ($handle === false) {
+            return false;
+        }
+        $written = false;
+        try {
+            if (flock($handle, LOCK_EX) && fwrite($handle, $json) === strlen($json)) {
+                fflush($handle);
+                @chmod($path, 0600);
+                $written = true;
+            }
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+        if (!$written) {
+            @unlink($path);
+        }
+        return $written;
+    }
+
+    /**
+     * 同じ鍵の処理を1つずつ実行する。
+     *
+     * 外部通信を含む受付処理全体を囲むため、例外時もfinallyで必ず解除する。
+     * 鍵にはuserIdそのものではなく、呼び出し側でSHA-256化した値を渡す。
+     */
+    public function synchronized(string $key, callable $work): mixed
+    {
+        $safeKey = self::safeKey($key);
+        if ($safeKey === '') {
+            throw new LineStorageUnavailable('E_LOCK_KEY');
+        }
+        $path = $this->dir . '/locks/' . $safeKey . '.lock';
+        $handle = @fopen($path, 'c');
+        if ($handle === false) {
+            throw new LineStorageUnavailable('E_LOCK_OPEN');
+        }
+        try {
+            if (!flock($handle, LOCK_EX)) {
+                throw new LineStorageUnavailable('E_LOCK_FLOCK');
+            }
+            @chmod($path, 0600);
+            return $work();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     /** @return array<string,mixed>|null */

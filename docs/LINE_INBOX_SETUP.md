@@ -66,6 +66,18 @@ sh scripts/deploy-exclude-test.sh
 | `channel_access_token` | チャネルアクセストークン（長期）。空でも動く（表示名が空になる） |
 | `inbox_token` | **`openssl rand -hex 32`**（64文字）で作る。iPhoneアプリへ同じ値を入れる |
 
+本人限定のアプリ送信テストを始める場合だけ、GitHubに次を追加します。
+
+| 種類 | 名前 | 値 |
+| --- | --- | --- |
+| Variable | `RELAGARDEN_LINE_MANUAL_SEND_ENABLED` | テスト開始直前だけ `true` |
+| Variable | `RELAGARDEN_LINE_MANUAL_SEND_TEST_MODE` | 本人限定中は必ず `true` |
+| Secret | `RELAGARDEN_LINE_MANUAL_SEND_ALLOWED_USER_ID` | よしさん本人のLINE userId 1件だけ |
+
+3項目が揃わない場合、送信機能は有効になりません。送信OFFの間は、Secretが
+残っていても生成する本番設定へuserIdを入れません。AI自動返信の設定は
+この手順では常にOFFです。最初の本人限定テストは1日1通で停止します。
+
 `inbox_token` は **64文字以上が必須** です。これより短いと起動を断り、
 すべての入口が `503`（ただいま準備中です）を返します。
 `openssl rand -hex 32` の出力がちょうど64文字なので、そのまま貼ってください。

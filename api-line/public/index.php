@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * 公式LINEの受信だけの入口。
+ * 公式LINEの受信と、明示的に有効化した本人限定テスト送信の入口。
  *
  * Xserverでは public_html/api/line/ へ置く。
  * 施工事例の掲載はiPhoneからGitHubへ直接行う方式のままで、
@@ -47,6 +47,10 @@ require $sourceDir . '/LineSignature.php';
 require $sourceDir . '/LineProfile.php';
 require $sourceDir . '/LineRateLimiter.php';
 require $sourceDir . '/LineInboxService.php';
+require $sourceDir . '/LineReceptionStateService.php';
+require $sourceDir . '/LineReceptionControlService.php';
+require $sourceDir . '/LineOwnerAiReplyService.php';
+require $sourceDir . '/LineManualSendService.php';
 require $sourceDir . '/LineWebhookService.php';
 require $sourceDir . '/LineRouter.php';
 
