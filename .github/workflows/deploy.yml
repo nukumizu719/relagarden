@@ -445,7 +445,22 @@ jobs:
               *) ;;
             esac
             check RELAGARDEN_LINE_AI_REPLY_SESSION_ID "$AI_REPLY_SESSION_ID" 16
-            check RELAGARDEN_LINE_AI_GATEWAY_TOKEN "$AI_GATEWAY_TOKEN" 32
+            # Gatewayが発行する端末トークンは 16桁deviceId.64桁secret の固定形式。
+            # 点を一般のSecretへ許可せず、この値だけを厳密に分解して確かめる。
+            case "$AI_GATEWAY_TOKEN" in
+              *.*) ;;
+              *) echo 'RELAGARDEN_LINE_AI_GATEWAY_TOKEN の形が違います' >&2; exit 1 ;;
+            esac
+            gateway_device_id=${AI_GATEWAY_TOKEN%%.*}
+            gateway_secret=${AI_GATEWAY_TOKEN#*.}
+            if [ "${#gateway_device_id}" -ne 16 ] || [ "${#gateway_secret}" -ne 64 ]; then
+              echo 'RELAGARDEN_LINE_AI_GATEWAY_TOKEN の形が違います' >&2
+              exit 1
+            fi
+            case "$gateway_device_id$gateway_secret" in
+              *[!0-9a-f]*) echo 'RELAGARDEN_LINE_AI_GATEWAY_TOKEN の形が違います' >&2; exit 1 ;;
+              *) ;;
+            esac
             case "$AI_GATEWAY_BASE_URL" in
               https://*) ;;
               *) echo 'AI GatewayはHTTPSのURLにしてください' >&2; exit 1 ;;

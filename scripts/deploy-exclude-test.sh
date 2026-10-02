@@ -66,6 +66,8 @@ if grep -q -- '--exclude=api/' .github/workflows/deploy.yml \
   && grep -q -- 'RELAGARDEN_LINE_AI_REPLY_ENABLED' .github/workflows/deploy.yml \
   && grep -q -- 'RELAGARDEN_LINE_AI_REPLY_TEST_MODE' .github/workflows/deploy.yml \
   && grep -q -- 'AI_REPLY_ALLOWED_USER_ID:.*RELAGARDEN_LINE_MANUAL_SEND_ALLOWED_USER_ID' .github/workflows/deploy.yml \
+  && grep -Fq -- 'gateway_device_id=${AI_GATEWAY_TOKEN%%.*}' .github/workflows/deploy.yml \
+  && grep -Fq -- 'gateway_secret=${AI_GATEWAY_TOKEN#*.}' .github/workflows/deploy.yml \
   && grep -q -- "'ai_reply_runtime_control_required' => true" .github/workflows/deploy.yml \
   && grep -q -- 'RELAGARDEN_LINE_MANUAL_SEND_TEST_MODE' .github/workflows/deploy.yml \
   && grep -q -- 'RELAGARDEN_LINE_MANUAL_SEND_ALLOWED_USER_ID' .github/workflows/deploy.yml; then
