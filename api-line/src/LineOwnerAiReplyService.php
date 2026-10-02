@@ -214,6 +214,7 @@ final class LineOwnerAiReplyService
 
         $prompt = $this->receptionPrompt($messageText, $states->missing($state));
 
+        $field = null;
         try {
             $gateway = ($this->postJson)(
                 $gatewayBase . '/ask',
@@ -229,25 +230,27 @@ final class LineOwnerAiReplyService
             );
         } catch (\Throwable $e) {
             $this->store->log('E_AI_GATEWAY', 1);
-            return $this->handoff($states, $state, $lineUserId, $sessionId, 'AI_GATEWAY', $replyToken, $lineToken);
+            $gateway = ['status' => 0, 'body' => ''];
         }
 
-        if ($gateway['status'] !== 200) {
+        if ($gateway['status'] === 200) {
+            $gatewayBody = json_decode($gateway['body'], true);
+            $decision = is_array($gatewayBody) && is_string($gatewayBody['reply'] ?? null)
+                ? trim($gatewayBody['reply'])
+                : '';
+            $candidate = $this->fieldForDecision($decision);
+            if ($candidate !== null && in_array($candidate, $states->missing($state), true)) {
+                $field = $candidate;
+            } else {
+                // 入力はこの手前の固定ルールで安全確認済み。Claudeが停止や形式外を
+                // 返しても自由文は送らず、不足項目を1つだけ尋ねて最低限の受付を続ける。
+                $this->store->log($decision === 'ACK_HANDOFF' ? 'I_AI_MINIMUM_FALLBACK' : 'E_AI_RESPONSE', 1);
+            }
+        } elseif ($gateway['status'] !== 0) {
             $this->store->log('E_AI_GATEWAY', 1);
-            return $this->handoff($states, $state, $lineUserId, $sessionId, 'AI_GATEWAY', $replyToken, $lineToken);
         }
-        $gatewayBody = json_decode($gateway['body'], true);
-        $decision = is_array($gatewayBody) && is_string($gatewayBody['reply'] ?? null)
-            ? trim($gatewayBody['reply'])
-            : '';
-        if ($decision === 'ACK_HANDOFF') {
-            return $this->handoff($states, $state, $lineUserId, $sessionId, 'AI_HANDOFF', $replyToken, $lineToken);
-        }
-        $field = $this->fieldForDecision($decision);
-        if ($field === null || !in_array($field, $states->missing($state), true)) {
-            $this->store->log('E_AI_RESPONSE', 1);
-            return $this->handoff($states, $state, $lineUserId, $sessionId, 'AI_INVALID', $replyToken, $lineToken);
-        }
+
+        $field ??= $states->missing($state)[0];
 
         $state = $states->ask($state, $field);
         if (!$states->save($lineUserId, $sessionId, $state)) {

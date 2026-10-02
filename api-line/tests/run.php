@@ -1233,6 +1233,47 @@ test('許可した本人だけGateway経由でreplyTokenへ返信する', functi
     assertSame(1, count($store->keys('inbox')), '再送で本文が増えている');
 });
 
+test('通常の人工芝相談はClaudeが引継ぎを選んでも最低限の受付質問を返す', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-minimum-response',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return str_contains($url, '/ask')
+                ? ['status' => 200, 'body' => '{"reply":"ACK_HANDOFF"}']
+                : ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook(
+        $router,
+        textEvent('EV-MINIMUM-RESPONSE', 'MSG-MINIMUM-RESPONSE', $owner, '人工芝を検討しています。')
+    );
+
+    assertSame(2, count($calls));
+    assertSame('https://gateway.example/v1/ask', $calls[0]['url']);
+    assertSame('https://api.line.me/v2/bot/message/reply', $calls[1]['url']);
+    assertSame(
+        'お問い合わせありがとうございます。施工場所の市区町村を教えていただけますか。',
+        $calls[1]['body']['messages'][0]['text'] ?? null,
+    );
+    [, $inbox] = getInbox($router);
+    assertSame(false, $inbox['items'][0]['needsHuman']);
+    assertSame('', $inbox['items'][0]['reasonCode']);
+});
+
 test('設定が不足しても外部通信せず、受信箱は止めない', function (): void {
     $store = freshStore();
     $calls = [];
@@ -1263,7 +1304,7 @@ test('設定が不足しても外部通信せず、受信箱は止めない', fu
     assertTrue(str_contains(readLog($store), 'E_AI_CONFIG'));
 });
 
-test('Gatewayが失敗しても受信箱へ残し、固定の引継ぎ文だけを試す', function (): void {
+test('Gatewayが失敗しても受信箱へ残し、安全な固定質問で最低限の受付を続ける', function (): void {
     $store = freshStore();
     $calls = [];
     $owner = 'UOWNER00000000000000000000000000';
@@ -1291,17 +1332,17 @@ test('Gatewayが失敗しても受信箱へ残し、固定の引継ぎ文だけ�
     );
 
     assertSame(200, $status);
-    assertSame(2, count($calls), 'Gateway失敗後の固定引継ぎを試していない');
+    assertSame(2, count($calls), 'Gateway失敗後の固定質問を試していない');
     assertSame('https://api.line.me/v2/bot/message/reply', $calls[1]['url']);
     assertSame(
-        'お問い合わせありがとうございます。内容を確認し、担当者からご連絡いたします。少々お待ちください。',
+        'お問い合わせありがとうございます。施工場所の市区町村を教えていただけますか。',
         $calls[1]['body']['messages'][0]['text'] ?? null,
     );
     assertSame(1, count($store->keys('inbox')), '手動返信用の本文が残っていない');
     assertTrue(str_contains(readLog($store), 'E_AI_GATEWAY'));
 });
 
-test('AIが選択肢外を返したら引継ぎ、次のイベントでは返信しない', function (): void {
+test('AIが選択肢外を返しても安全な固定質問で最低限の受付を続ける', function (): void {
     $store = freshStore();
     $calls = [];
     $owner = 'UOWNER00000000000000000000000000';
@@ -1327,11 +1368,13 @@ test('AIが選択肢外を返したら引継ぎ、次のイベントでは返信
     );
     $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
     postWebhook($router, textEvent('EV-AI-LIMIT-1', 'MSG-AI-LIMIT-1', $owner, '人工芝について相談です'));
-    postWebhook($router, textEvent('EV-AI-LIMIT-2', 'MSG-AI-LIMIT-2', $owner, '2件目', 1756000001000));
-
-    assertSame(2, count($calls), '2件目も外部通信している');
-    assertSame(2, count($store->keys('inbox')), '2件目の本文が受信箱へ残っていない');
-    assertTrue(str_contains(readLog($store), 'I_AI_RECEPTION_STOPPED'));
+    assertSame(2, count($calls));
+    assertSame('https://api.line.me/v2/bot/message/reply', $calls[1]['url']);
+    assertSame(
+        'お問い合わせありがとうございます。施工場所の市区町村を教えていただけますか。',
+        $calls[1]['body']['messages'][0]['text'] ?? null,
+    );
+    assertTrue(str_contains(readLog($store), 'E_AI_RESPONSE'));
 });
 
 test('料金や日程の相談はAIへ送らず固定文で担当者へ引き継ぐ', function (): void {
@@ -1524,7 +1567,7 @@ test('質問中も項目ごとの形式外回答をAIへ渡さない', function 
     }
 });
 
-test('AI文に金額や確約が混ざったら送らず固定引継ぎ文へ置き換える', function (): void {
+test('AI文に金額や確約が混ざっても送らず安全な固定質問へ置き換える', function (): void {
     $store = freshStore();
     $calls = [];
     $owner = 'UOWNER00000000000000000000000000';
@@ -1556,7 +1599,7 @@ test('AI文に金額や確約が混ざったら送らず固定引継ぎ文へ置
 
     assertSame(2, count($calls));
     assertSame(
-        'お問い合わせありがとうございます。内容を確認し、担当者からご連絡いたします。少々お待ちください。',
+        'お問い合わせありがとうございます。施工場所の市区町村を教えていただけますか。',
         $calls[1]['body']['messages'][0]['text'] ?? null,
     );
     assertTrue(str_contains(readLog($store), 'E_AI_RESPONSE'));
