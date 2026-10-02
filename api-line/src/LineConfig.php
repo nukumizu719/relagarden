@@ -97,10 +97,16 @@ final class LineConfig
             // 本人限定AI返信は、必要項目を明示して初めて動く。
             'ai_reply_enabled' => false,
             'ai_reply_test_mode' => false,
+            'ai_reply_runtime_control_required' => true,
             'ai_reply_allowed_user_id' => '',
+            // 本人限定受付テストの単位。同じ値では受付状態を引き継ぐ。
+            // 再テスト時だけ、推測されにくい別の値へ変更する。
+            'ai_reply_session_id' => '',
             'ai_gateway_base_url' => '',
             'ai_gateway_token' => '',
-            'ai_reply_daily_limit' => 20,
+            // 最初の複数ターンテストは質問3回＋引継ぎ1回まで。
+            'ai_reception_max_questions' => 3,
+            'ai_reply_daily_limit' => 4,
             'ai_gateway_timeout_seconds' => 8,
             'line_reply_timeout_seconds' => 5,
             // アプリからの手動送信は、本人限定テストの設定を別に持つ。

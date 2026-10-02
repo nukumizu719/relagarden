@@ -47,6 +47,8 @@ require $sourceDir . '/LineSignature.php';
 require $sourceDir . '/LineProfile.php';
 require $sourceDir . '/LineRateLimiter.php';
 require $sourceDir . '/LineInboxService.php';
+require $sourceDir . '/LineReceptionStateService.php';
+require $sourceDir . '/LineReceptionControlService.php';
 require $sourceDir . '/LineOwnerAiReplyService.php';
 require $sourceDir . '/LineManualSendService.php';
 require $sourceDir . '/LineWebhookService.php';

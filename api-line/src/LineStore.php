@@ -36,7 +36,7 @@ final class LineStore
         if ($this->dir === '') {
             throw new LineStorageUnavailable('E_STORAGE_PATH');
         }
-        foreach (['', '/events', '/inbox', '/rate', '/requests', '/logs'] as $sub) {
+        foreach (['', '/events', '/inbox', '/rate', '/requests', '/reception', '/reception_stops', '/controls', '/locks', '/logs'] as $sub) {
             $path = $this->dir . $sub;
             if (!is_dir($path) && !@mkdir($path, 0700, true) && !is_dir($path)) {
                 throw new LineStorageUnavailable('E_STORAGE_MKDIR');
@@ -138,6 +138,35 @@ final class LineStore
             @unlink($path);
         }
         return $written;
+    }
+
+    /**
+     * 同じ鍵の処理を1つずつ実行する。
+     *
+     * 外部通信を含む受付処理全体を囲むため、例外時もfinallyで必ず解除する。
+     * 鍵にはuserIdそのものではなく、呼び出し側でSHA-256化した値を渡す。
+     */
+    public function synchronized(string $key, callable $work): mixed
+    {
+        $safeKey = self::safeKey($key);
+        if ($safeKey === '') {
+            throw new LineStorageUnavailable('E_LOCK_KEY');
+        }
+        $path = $this->dir . '/locks/' . $safeKey . '.lock';
+        $handle = @fopen($path, 'c');
+        if ($handle === false) {
+            throw new LineStorageUnavailable('E_LOCK_OPEN');
+        }
+        try {
+            if (!flock($handle, LOCK_EX)) {
+                throw new LineStorageUnavailable('E_LOCK_FLOCK');
+            }
+            @chmod($path, 0600);
+            return $work();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     /** @return array<string,mixed>|null */

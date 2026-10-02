@@ -39,14 +39,21 @@ return [
     // よしさん本人の1件だけにする。表示名では判定しない。
     'ai_reply_enabled' => false,
     'ai_reply_test_mode' => false,
+    // trueのまま使う。アプリ側もONにした場合だけ本人へ返信する。
+    'ai_reply_runtime_control_required' => true,
     'ai_reply_allowed_user_id' => '',
+    // 本人限定テストの識別子。同じ値の間は受付状態を引き継ぐ。
+    // 再テスト時だけ別の値にする（APIキーやパスワードは入れない）。
+    'ai_reply_session_id' => '',
 
     // ClaudeのAPIキーはここへ置かない。よし管理AI GatewayのURLと、
     // LINE受信サーバー専用にペアリングしたGatewayトークンだけを置く。
     'ai_gateway_base_url' => 'https://yoshi-ai-gateway.shakkin-diet-coach-api.workers.dev/v1',
     'ai_gateway_token' => '',
-    // 誤動作時の被害を小さくするため、本人への返信も1日20回で停止する。
-    'ai_reply_daily_limit' => 20,
+    // 初回の複数ターンテストは最大3質問。最後に引継ぎ文を1回返すため、
+    // 1日の上限は4に固定する。
+    'ai_reception_max_questions' => 3,
+    'ai_reply_daily_limit' => 4,
     'ai_gateway_timeout_seconds' => 8,
     'line_reply_timeout_seconds' => 5,
 

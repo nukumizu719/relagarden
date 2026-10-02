@@ -63,7 +63,10 @@ if grep -q -- '--exclude=api/' .github/workflows/deploy.yml \
   && grep -q -- '--exclude=line/' .github/workflows/deploy.yml \
   && grep -q -- 'path: api-line/src/' .github/workflows/deploy.yml \
   && grep -q -- 'path: api-line/public/' .github/workflows/deploy.yml \
-  && grep -q -- "'ai_reply_enabled' => false" .github/workflows/deploy.yml \
+  && grep -q -- 'RELAGARDEN_LINE_AI_REPLY_ENABLED' .github/workflows/deploy.yml \
+  && grep -q -- 'RELAGARDEN_LINE_AI_REPLY_TEST_MODE' .github/workflows/deploy.yml \
+  && grep -q -- 'AI_REPLY_ALLOWED_USER_ID:.*RELAGARDEN_LINE_MANUAL_SEND_ALLOWED_USER_ID' .github/workflows/deploy.yml \
+  && grep -q -- "'ai_reply_runtime_control_required' => true" .github/workflows/deploy.yml \
   && grep -q -- 'RELAGARDEN_LINE_MANUAL_SEND_TEST_MODE' .github/workflows/deploy.yml \
   && grep -q -- 'RELAGARDEN_LINE_MANUAL_SEND_ALLOWED_USER_ID' .github/workflows/deploy.yml; then
   ok 'deploy.yml に除外とLINE APIの配置工程が入っている'

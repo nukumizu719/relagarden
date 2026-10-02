@@ -58,10 +58,28 @@ final class LineInboxService
                 'kind' => (string) ($record['kind'] ?? 'text'),
                 'text' => (string) ($record['text'] ?? ''),
                 'receivedAt' => (string) ($record['receivedAt'] ?? ''),
+                'needsHuman' => ($record['needsHuman'] ?? false) === true,
+                'reasonCode' => is_string($record['reasonCode'] ?? null)
+                    ? $record['reasonCode']
+                    : 'MANUAL_ONLY',
+                'collectedFields' => $this->collectedFields($record['collectedFields'] ?? null),
             ];
         }
 
         return ['items' => $items, 'remaining' => $remaining];
+    }
+
+    /** @return array<string,string> */
+    private function collectedFields(mixed $raw): array
+    {
+        $source = is_array($raw) ? $raw : [];
+        $result = [];
+        foreach (LineReceptionStateService::fields as $field) {
+            $result[$field] = is_string($source[$field] ?? null)
+                ? (string) $source[$field]
+                : '';
+        }
+        return $result;
     }
 
     /**

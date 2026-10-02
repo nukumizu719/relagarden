@@ -376,6 +376,13 @@ jobs:
           CHANNEL_SECRET: ${{ secrets.RELAGARDEN_LINE_CHANNEL_SECRET }}
           CHANNEL_ACCESS_TOKEN: ${{ secrets.RELAGARDEN_LINE_CHANNEL_ACCESS_TOKEN }}
           INBOX_TOKEN: ${{ secrets.RELAGARDEN_LINE_INBOX_TOKEN }}
+          AI_REPLY_ENABLED: ${{ vars.RELAGARDEN_LINE_AI_REPLY_ENABLED || 'false' }}
+          AI_REPLY_TEST_MODE: ${{ vars.RELAGARDEN_LINE_AI_REPLY_TEST_MODE || 'false' }}
+          # 受付AIと確認送信は、同じ本人1件だけを許可する。
+          AI_REPLY_ALLOWED_USER_ID: ${{ secrets.RELAGARDEN_LINE_MANUAL_SEND_ALLOWED_USER_ID }}
+          AI_REPLY_SESSION_ID: ${{ secrets.RELAGARDEN_LINE_AI_REPLY_SESSION_ID }}
+          AI_GATEWAY_BASE_URL: ${{ vars.RELAGARDEN_LINE_AI_GATEWAY_BASE_URL }}
+          AI_GATEWAY_TOKEN: ${{ secrets.RELAGARDEN_LINE_AI_GATEWAY_TOKEN }}
           MANUAL_SEND_ENABLED: ${{ vars.RELAGARDEN_LINE_MANUAL_SEND_ENABLED || 'false' }}
           MANUAL_SEND_TEST_MODE: ${{ vars.RELAGARDEN_LINE_MANUAL_SEND_TEST_MODE || 'false' }}
           MANUAL_SEND_ALLOWED_USER_ID: ${{ secrets.RELAGARDEN_LINE_MANUAL_SEND_ALLOWED_USER_ID }}
@@ -404,6 +411,14 @@ jobs:
           check RELAGARDEN_LINE_CHANNEL_ACCESS_TOKEN "$CHANNEL_ACCESS_TOKEN" 16
           check RELAGARDEN_LINE_INBOX_TOKEN "$INBOX_TOKEN" 64
 
+          case "$AI_REPLY_ENABLED" in
+            true|false) ;;
+            *) echo 'RELAGARDEN_LINE_AI_REPLY_ENABLED は true または false にしてください' >&2; exit 1 ;;
+          esac
+          case "$AI_REPLY_TEST_MODE" in
+            true|false) ;;
+            *) echo 'RELAGARDEN_LINE_AI_REPLY_TEST_MODE は true または false にしてください' >&2; exit 1 ;;
+          esac
           case "$MANUAL_SEND_ENABLED" in
             true|false) ;;
             *) echo 'RELAGARDEN_LINE_MANUAL_SEND_ENABLED は true または false にしてください' >&2; exit 1 ;;
@@ -412,6 +427,41 @@ jobs:
             true|false) ;;
             *) echo 'RELAGARDEN_LINE_MANUAL_SEND_TEST_MODE は true または false にしてください' >&2; exit 1 ;;
           esac
+
+          # 受付AIをONにする場合は、本人限定テストに必要な値を全部そろえる。
+          # 実際の返信には、さらにアプリ側の受付AIスイッチONが必要。
+          if [ "$AI_REPLY_ENABLED" = true ]; then
+            if [ "$AI_REPLY_TEST_MODE" != true ]; then
+              echo '受付AI ONには本人限定テストONが必要です' >&2
+              exit 1
+            fi
+            if [ "${#AI_REPLY_ALLOWED_USER_ID}" -ne 33 ] \
+              || [ "${AI_REPLY_ALLOWED_USER_ID#U}" = "$AI_REPLY_ALLOWED_USER_ID" ]; then
+              echo '受付AIの本人LINE userIdを確認できません' >&2
+              exit 1
+            fi
+            case "${AI_REPLY_ALLOWED_USER_ID#U}" in
+              ''|*[!0-9A-Fa-f]*) echo '受付AIの本人LINE userIdを確認できません' >&2; exit 1 ;;
+              *) ;;
+            esac
+            check RELAGARDEN_LINE_AI_REPLY_SESSION_ID "$AI_REPLY_SESSION_ID" 16
+            check RELAGARDEN_LINE_AI_GATEWAY_TOKEN "$AI_GATEWAY_TOKEN" 32
+            case "$AI_GATEWAY_BASE_URL" in
+              https://*) ;;
+              *) echo 'AI GatewayはHTTPSのURLにしてください' >&2; exit 1 ;;
+            esac
+            case "$AI_GATEWAY_BASE_URL" in
+              *[!A-Za-z0-9:/.?=_-]*) echo 'AI Gateway URLに使えない文字が入っています' >&2; exit 1 ;;
+              *) ;;
+            esac
+          else
+            # OFFなら関連値を生成設定へ残さない。
+            AI_REPLY_TEST_MODE=false
+            AI_REPLY_ALLOWED_USER_ID=''
+            AI_REPLY_SESSION_ID=''
+            AI_GATEWAY_BASE_URL=''
+            AI_GATEWAY_TOKEN=''
+          fi
 
           # 送信ONのときは、本人限定テストと本人userIdが必ず必要。
           # どれか1つでも不足したら、危険な設定を置かずデプロイ自体を止める。
@@ -435,6 +485,13 @@ jobs:
             MANUAL_SEND_ALLOWED_USER_ID=''
           fi
 
+          # 受付AIと確認送信を同時に試す場合、許可先は同じ本人1件に限定する。
+          if [ "$AI_REPLY_ENABLED" = true ] && [ "$MANUAL_SEND_ENABLED" = true ] \
+            && [ "$AI_REPLY_ALLOWED_USER_ID" != "$MANUAL_SEND_ALLOWED_USER_ID" ]; then
+            echo '受付AIと確認送信の本人LINE userIdが一致していません' >&2
+            exit 1
+          fi
+
           mkdir -p line-config-out
           umask 077
           {
@@ -444,10 +501,15 @@ jobs:
             printf "    'channel_secret' => '%s',\n" "$CHANNEL_SECRET"
             printf "    'channel_access_token' => '%s',\n" "$CHANNEL_ACCESS_TOKEN"
             printf "    'inbox_token' => '%s',\n" "$INBOX_TOKEN"
-            # AI自動返信は今回使わない。常にOFFで生成する。
-            printf "    'ai_reply_enabled' => false,\n"
-            printf "    'ai_reply_test_mode' => false,\n"
-            printf "    'ai_reply_allowed_user_id' => '',\n"
+            printf "    'ai_reply_enabled' => %s,\n" "$AI_REPLY_ENABLED"
+            printf "    'ai_reply_test_mode' => %s,\n" "$AI_REPLY_TEST_MODE"
+            printf "    'ai_reply_runtime_control_required' => true,\n"
+            printf "    'ai_reply_allowed_user_id' => '%s',\n" "$AI_REPLY_ALLOWED_USER_ID"
+            printf "    'ai_reply_session_id' => '%s',\n" "$AI_REPLY_SESSION_ID"
+            printf "    'ai_gateway_base_url' => '%s',\n" "$AI_GATEWAY_BASE_URL"
+            printf "    'ai_gateway_token' => '%s',\n" "$AI_GATEWAY_TOKEN"
+            printf "    'ai_reception_max_questions' => 3,\n"
+            printf "    'ai_reply_daily_limit' => 4,\n"
             printf "    'manual_send_enabled' => %s,\n" "$MANUAL_SEND_ENABLED"
             printf "    'manual_send_test_mode' => %s,\n" "$MANUAL_SEND_TEST_MODE"
             printf "    'manual_send_allowed_user_id' => '%s',\n" "$MANUAL_SEND_ALLOWED_USER_ID"
