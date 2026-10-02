@@ -50,10 +50,10 @@ return [
     // LINE受信サーバー専用にペアリングしたGatewayトークンだけを置く。
     'ai_gateway_base_url' => 'https://yoshi-ai-gateway.shakkin-diet-coach-api.workers.dev/v1',
     'ai_gateway_token' => '',
-    // 初回の複数ターンテストは最大3質問。最後に引継ぎ文を1回返すため、
-    // 1日の上限は4に固定する。
-    'ai_reception_max_questions' => 3,
-    'ai_reply_daily_limit' => 4,
+    // 地域・広さ・現状・写真・希望時期の5項目を確認する。
+    // 最後の引継ぎを含む一連の受付を、本人限定で1日2回まで試せる。
+    'ai_reception_max_questions' => 5,
+    'ai_reply_daily_limit' => 12,
     'ai_gateway_timeout_seconds' => 8,
     'line_reply_timeout_seconds' => 5,
 

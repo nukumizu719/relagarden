@@ -19,6 +19,7 @@ final class LineReceptionStateService
     private const reasons = [
         '',
         'MANUAL_ONLY',
+        'MANUAL_TAKEOVER',
         'PRICE',
         'SCHEDULE_CONFIRMATION',
         'DISCOUNT',
@@ -123,6 +124,9 @@ final class LineReceptionStateService
                 if (preg_match('/(?:写真.*(?:ない|ありません|送れない)|画像.*(?:ない|ありません|送れない)|撮れない)/u', $value) === 1) {
                     $fields['photo'] = 'unavailable';
                     $state['awaiting'] = '';
+                } elseif (preg_match('/(?:写真|画像).*(?:送ります|送れます|あとで送)/u', $value) === 1) {
+                    $fields['photo'] = 'promised';
+                    $state['awaiting'] = '';
                 }
             } elseif ($value !== '') {
                 $limits = [
@@ -179,7 +183,7 @@ final class LineReceptionStateService
     /** @param array<string,mixed> $state */
     public function reachedQuestionLimit(array $state): bool
     {
-        return (int) ($this->normalize($state)['questionsAsked'] ?? 0) >= max(1, min(3, $this->maxQuestions));
+        return (int) ($this->normalize($state)['questionsAsked'] ?? 0) >= max(1, min(5, $this->maxQuestions));
     }
 
     /** @param array<string,mixed> $state @return array{needsHuman:bool,reasonCode:string,collectedFields:array<string,string>} */
@@ -243,7 +247,7 @@ final class LineReceptionStateService
         $rawFields = is_array($raw['collectedFields'] ?? null) ? $raw['collectedFields'] : [];
         foreach (self::fields as $field) {
             $value = is_string($rawFields[$field] ?? null) ? $rawFields[$field] : '';
-            if ($field === 'photo' && !in_array($value, ['', 'received', 'unavailable'], true)) {
+            if ($field === 'photo' && !in_array($value, ['', 'received', 'unavailable', 'promised'], true)) {
                 return $this->handoffWithoutNormalize($state, 'STATE_INVALID');
             }
             $fields[$field] = mb_substr($value, 0, $field === 'condition' ? 300 : 100);
@@ -252,7 +256,7 @@ final class LineReceptionStateService
         $state['status'] = $status;
         $state['awaiting'] = $awaiting;
         $state['turnCount'] = max(0, min(99, (int) ($raw['turnCount'] ?? 0)));
-        $state['questionsAsked'] = max(0, min(3, (int) ($raw['questionsAsked'] ?? 0)));
+        $state['questionsAsked'] = max(0, min(5, (int) ($raw['questionsAsked'] ?? 0)));
         $state['collectedFields'] = $fields;
         $state['reasonCode'] = $reason;
         $state['updatedAt'] = is_string($raw['updatedAt'] ?? null) ? $raw['updatedAt'] : '';

@@ -76,8 +76,8 @@ final class LineReceptionControlService
             && strlen($this->config->str('ai_gateway_token')) >= 32
             && strlen($this->config->str('channel_access_token')) >= 16
             && $maxQuestions >= 1
-            && $maxQuestions <= 3
+            && $maxQuestions <= 5
             && $dailyLimit >= $maxQuestions + 1
-            && $dailyLimit <= 4;
+            && $dailyLimit <= 20;
     }
 }

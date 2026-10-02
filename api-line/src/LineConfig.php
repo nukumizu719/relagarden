@@ -104,9 +104,9 @@ final class LineConfig
             'ai_reply_session_id' => '',
             'ai_gateway_base_url' => '',
             'ai_gateway_token' => '',
-            // 最初の複数ターンテストは質問3回＋引継ぎ1回まで。
-            'ai_reception_max_questions' => 3,
-            'ai_reply_daily_limit' => 4,
+            // 受付5項目＋引継ぎ。本人限定テストは1日2往復分まで。
+            'ai_reception_max_questions' => 5,
+            'ai_reply_daily_limit' => 12,
             'ai_gateway_timeout_seconds' => 8,
             'line_reply_timeout_seconds' => 5,
             // アプリからの手動送信は、本人限定テストの設定を別に持つ。
