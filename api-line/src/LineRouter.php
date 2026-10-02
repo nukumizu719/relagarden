@@ -15,6 +15,7 @@ namespace Relagarden\Line;
  * | GET      | /api/line/inbox   | まだ取り込んでいない問い合わせを渡す    |
  * | POST     | /api/line/sync    | 取り込めたものへ受け取り済みの印を付ける |
  * | POST     | /api/line/reception/reset | 本人限定受付の停止状態を解除する   |
+ * | POST     | /api/line/reception/handoff | 本人限定受付を人対応へ切り替える |
  * | GET/POST | /api/line/reception/mode  | 本人限定受付AIを確認・切り替える   |
  * | POST     | /api/line/send    | 確認済みの本人向け文字返信を1件送る       |
  */
@@ -138,6 +139,48 @@ final class LineRouter
                     throw new LineError(500, '停止状態を解除できません', 'E_RESET_WRITE');
                 }
                 return [200, ['ok' => true, 'reset' => true]];
+            }
+
+            if ($route === '/reception/handoff') {
+                $this->requireMethod($method, 'POST');
+                $this->requireInboxToken($headers, $clientIp);
+                if (strlen($rawBody) > $this->config->int('max_sync_bytes')) {
+                    throw new LineError(413, '内容が大きすぎます', 'E_HANDOFF_BODY_TOO_BIG');
+                }
+                $body = $this->json($rawBody);
+                if (($body['confirmed'] ?? null) !== true) {
+                    throw new LineError(400, 'AI受付を解除する確認が必要です', 'E_HANDOFF_NOT_CONFIRMED');
+                }
+                $lineUserId = is_string($body['lineUserId'] ?? null)
+                    ? trim($body['lineUserId'])
+                    : '';
+                $allowed = $this->config->str('ai_reply_allowed_user_id');
+                $sessionId = $this->config->str('ai_reply_session_id');
+                if ($lineUserId === '' || $allowed === '' || !hash_equals($allowed, $lineUserId)) {
+                    throw new LineError(403, 'この受付は解除できません', 'E_HANDOFF_TARGET');
+                }
+                if ($sessionId === '' || strlen($sessionId) > 128) {
+                    throw new LineError(503, 'AI受付はまだ準備中です', 'E_HANDOFF_CONFIG');
+                }
+                $lockKey = 'reception_' . LineStore::hashKey($lineUserId . "\0" . $sessionId);
+                $handoff = $this->store->synchronized(
+                    $lockKey,
+                    function () use ($lineUserId, $sessionId): bool {
+                        $states = new LineReceptionStateService(
+                            $this->store,
+                            $this->config->int('ai_reception_max_questions'),
+                        );
+                        $state = $states->handoff(
+                            $states->load($lineUserId, $sessionId),
+                            'MANUAL_TAKEOVER',
+                        );
+                        return $states->save($lineUserId, $sessionId, $state);
+                    }
+                );
+                if (!$handoff) {
+                    throw new LineError(500, 'AI受付を解除できません', 'E_HANDOFF_WRITE');
+                }
+                return [200, ['ok' => true, 'handoff' => true]];
             }
 
             if ($route === '/reception/mode') {

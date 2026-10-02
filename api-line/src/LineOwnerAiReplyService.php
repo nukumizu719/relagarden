@@ -10,7 +10,7 @@ namespace Relagarden\Line;
  * AI ProviderのAPIキーは持たない。Gateway用トークンとLINEチャネル
  * アクセストークンは、public_html外の設定ファイルからだけ受け取る。
  * プッシュ送信は使わず、届いた各イベントのreplyTokenへ1回だけ返信する。
- * 最初の安全設定では最大3質問で担当者へ引き継ぐ。
+ * 本人限定の安全設定では、受付5項目を確認してから担当者へ引き継ぐ。
  */
 final class LineOwnerAiReplyService
 {
@@ -79,7 +79,7 @@ final class LineOwnerAiReplyService
             ) {
                 return (new LineReceptionStateService(
                     $this->store,
-                    max(1, min(3, $this->config->int('ai_reception_max_questions'))),
+                    max(1, min(5, $this->config->int('ai_reception_max_questions'))),
                 ))->failStop($lineUserId, $sessionId, 'LOCK_FAILED');
             }
             return LineReceptionStateService::manualMetadata();
@@ -121,9 +121,9 @@ final class LineOwnerAiReplyService
             || $sessionId === ''
             || strlen($sessionId) > 128
             || $maxQuestions < 1
-            || $maxQuestions > 3
+            || $maxQuestions > 5
             || $dailyLimit < $maxQuestions + 1
-            || $dailyLimit > 4
+            || $dailyLimit > 20
         ) {
             $this->store->log('E_AI_CONFIG', 1);
             return $manual;
