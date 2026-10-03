@@ -1619,7 +1619,7 @@ test('AI文に金額や確約が混ざっても送らず安全な固定質問へ
     assertTrue(str_contains(readLog($store), 'E_AI_RESPONSE'));
 });
 
-test('最大3質問で地域・広さ・写真を集め、担当者へ引き継ぐ', function (): void {
+test('最大3質問で地域・広さ・現状を集め、担当者へ引き継ぐ', function (): void {
     $store = freshStore();
     $calls = [];
     $gatewayReplies = ['ASK_LOCATION', 'ASK_AREA', 'ASK_PHOTO'];
@@ -1652,11 +1652,11 @@ test('最大3質問で地域・広さ・写真を集め、担当者へ引き継�
     postWebhook($router, textEvent('EV-MT-1', 'MSG-MT-1', $owner, '人工芝について相談です', 1756000000000));
     postWebhook($router, textEvent('EV-MT-2', 'MSG-MT-2', $owner, '岡崎市です', 1756000001000));
     postWebhook($router, textEvent('EV-MT-3', 'MSG-MT-3', $owner, '約30㎡です', 1756000002000));
-    postWebhook($router, imageEvent('EV-MT-4', 'MSG-MT-4', $owner, 1756000003000));
+    postWebhook($router, textEvent('EV-MT-4', 'MSG-MT-4', $owner, '砂利です', 1756000003000));
 
     $gatewayCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/ask')));
     $lineCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/message/reply')));
-    assertSame(3, count($gatewayCalls), '質問3回を超えてGatewayを呼んでいる');
+    assertSame(1, count($gatewayCalls), '一連受付の途中でもGateway待ちが発生している');
     assertSame(4, count($lineCalls), '質問3回と引継ぎ1回以外を送っている');
     foreach ($calls as $call) {
         assertTrue(!str_contains($call['url'], '/push'), 'Push送信を使っている');
@@ -1666,14 +1666,14 @@ test('最大3質問で地域・広さ・写真を集め、担当者へ引き継�
     [, $inbox] = getInbox($router);
     assertSame(4, count($inbox['items']));
     $latest = $inbox['items'][3];
-    assertSame('image', $latest['kind']);
-    assertSame('', $latest['text']);
+    assertSame('text', $latest['kind']);
+    assertSame('砂利です', $latest['text']);
     assertSame(true, $latest['needsHuman']);
     assertSame('MAX_QUESTIONS', $latest['reasonCode']);
     assertSame('岡崎市です', $latest['collectedFields']['region']);
     assertSame('約30㎡です', $latest['collectedFields']['area']);
-    assertSame('received', $latest['collectedFields']['photo']);
-    assertSame('', $latest['collectedFields']['condition']);
+    assertSame('', $latest['collectedFields']['photo']);
+    assertSame('砂利です', $latest['collectedFields']['condition']);
     assertSame('', $latest['collectedFields']['preferredTiming']);
 });
 
@@ -1715,8 +1715,12 @@ test('最大5質問なら受付5項目を一連で確認してから担当者へ
 
     $gatewayCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/ask')));
     $lineCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/message/reply')));
-    assertSame(5, count($gatewayCalls), '受付5項目をすべて質問していない');
+    assertSame(1, count($gatewayCalls), '一連受付の途中でもGateway待ちが発生している');
     assertSame(6, count($lineCalls), '5質問と完了引継ぎ以外を送っている');
+    assertTrue(
+        str_contains((string) ($lineCalls[1]['body']['messages'][0]['text'] ?? ''), '広さ'),
+        '場所回答後に広さの質問へ進んでいない',
+    );
 
     [, $inbox] = getInbox($router);
     $latest = $inbox['items'][5];
@@ -1795,7 +1799,7 @@ test('同じ本人の並行受付でも質問数は3回を超えない', functio
     }
 
     $calls = is_file($callFile) ? file($callFile, FILE_IGNORE_NEW_LINES) : [];
-    assertSame(1, count(array_filter($calls, static fn (string $call): bool => $call === 'G')));
+    assertSame(0, count(array_filter($calls, static fn (string $call): bool => $call === 'G')));
     $saved = $states->load($owner, $sessionId);
     assertSame(3, $saved['questionsAsked']);
     assertSame('handoff', $saved['status']);
