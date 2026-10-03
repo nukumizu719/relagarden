@@ -1,0 +1,33 @@
+name: Diagnose LINE reception safely
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read recent safe LINE result codes
+        env:
+          XSERVER_HOST: ${{ secrets.XSERVER_HOST }}
+          XSERVER_USER: ${{ secrets.XSERVER_USER }}
+          XSERVER_SSH_KEY: ${{ secrets.XSERVER_SSH_KEY }}
+        run: |
+          set -eu
+          set +x
+          umask 077
+          key_file="$RUNNER_TEMP/xserver-key"
+          known_hosts="$RUNNER_TEMP/known-hosts"
+          printf '%s\n' "$XSERVER_SSH_KEY" > "$key_file"
+          ssh-keyscan -p 10022 "$XSERVER_HOST" > "$known_hosts" 2>/dev/null
+          ssh \
+            -i "$key_file" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$known_hosts" \
+            -p 10022 \
+            "$XSERVER_USER@$XSERVER_HOST" \
+            'log="/home/xs674757/relagarden.jp/private/line-storage/logs/$(date -u +%Y-%m).log"; if [ -f "$log" ]; then tail -n 80 "$log"; else echo NO_SAFE_LOG; fi'
