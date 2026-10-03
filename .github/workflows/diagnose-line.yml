@@ -2,6 +2,12 @@ name: Diagnose LINE reception safely
 
 on:
   workflow_dispatch:
+    inputs:
+      send_owner_test:
+        description: Send one fixed diagnostic message to the allowlisted owner
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -35,6 +41,40 @@ jobs:
               echo 'LINE_BOT_ACCOUNT=MISMATCH'
             fi
           fi
+
+      - name: Check owner-only push route safely
+        if: ${{ inputs.send_owner_test == true }}
+        env:
+          CHANNEL_ACCESS_TOKEN: ${{ secrets.RELAGARDEN_LINE_CHANNEL_ACCESS_TOKEN }}
+          OWNER_USER_ID: ${{ secrets.RELAGARDEN_LINE_MANUAL_SEND_ALLOWED_USER_ID }}
+        run: |
+          set -eu
+          set +x
+          if [ "${#OWNER_USER_ID}" -ne 33 ] \
+            || [ "${OWNER_USER_ID#U}" = "$OWNER_USER_ID" ]; then
+            echo 'LINE_OWNER_PUSH_HTTP=OWNER_ID_INVALID'
+            exit 0
+          fi
+          case "${OWNER_USER_ID#U}" in
+            ''|*[!0-9A-Fa-f]*) echo 'LINE_OWNER_PUSH_HTTP=OWNER_ID_INVALID'; exit 0 ;;
+            *) ;;
+          esac
+          payload_file="$RUNNER_TEMP/line-owner-push.json"
+          response_file="$RUNNER_TEMP/line-owner-push-response.json"
+          jq -n \
+            --arg to "$OWNER_USER_ID" \
+            --arg text '受付AIの送信経路を確認しています。' \
+            '{to: $to, messages: [{type: "text", text: $text}]}' \
+            > "$payload_file"
+          status="$(curl -sS -o "$response_file" -w '%{http_code}' \
+            -H "Authorization: Bearer $CHANNEL_ACCESS_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data-binary "@$payload_file" \
+            https://api.line.me/v2/bot/message/push || true)"
+          case "$status" in
+            000|2??|4??|5??) echo "LINE_OWNER_PUSH_HTTP=$status" ;;
+            *) echo 'LINE_OWNER_PUSH_HTTP=UNKNOWN' ;;
+          esac
 
       - name: Read recent safe LINE result codes
         env:
