@@ -1969,6 +1969,169 @@ test('AI文に金額や確約が混ざっても送らず安全な固定質問へ
     assertTrue(str_contains(readLog($store), 'E_AI_RESPONSE'));
 });
 
+test('住所・広さ・現状・写真予定・希望時期をまとめて受け、聞き直さず引き継ぐ', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-bulk-complete',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 5,
+        'ai_reply_daily_limit' => 12,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        static function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook($router, textEvent(
+        'EV-BULK-COMPLETE',
+        'MSG-BULK-COMPLETE',
+        $owner,
+        '人工芝を検討しています。住所は愛知県刈谷市です。庭は約20㎡で、現在は砂利です。写真はあとで送ります。11月上旬を希望します。',
+    ));
+
+    $gatewayCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/ask')));
+    $lineCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/message/reply')));
+    assertSame(0, count($gatewayCalls), 'まとめ受付を外部AIへ送っている');
+    assertSame(1, count($lineCalls), '完了返信以外を送っている');
+    $sent = (string) ($lineCalls[0]['body']['messages'][0]['text'] ?? '');
+    assertTrue(str_contains($sent, '以下の内容で受け付けました。'));
+    assertTrue(str_contains($sent, '施工場所：愛知県刈谷市'));
+    assertTrue(str_contains($sent, '広さ：約20㎡'));
+    assertTrue(str_contains($sent, '現在の状態：砂利'));
+    assertTrue(str_contains($sent, '施工場所の写真：後ほど送付予定'));
+    assertTrue(str_contains($sent, '希望時期：11月上旬'));
+
+    [, $inbox] = getInbox($router);
+    $latest = $inbox['items'][0];
+    assertSame(true, $latest['needsHuman']);
+    assertSame('INTAKE_COMPLETE', $latest['reasonCode']);
+    assertSame('愛知県刈谷市', $latest['collectedFields']['region']);
+    assertSame('約20㎡', $latest['collectedFields']['area']);
+    assertSame('砂利', $latest['collectedFields']['condition']);
+    assertSame('promised', $latest['collectedFields']['photo']);
+    assertSame('11月上旬', $latest['collectedFields']['preferredTiming']);
+});
+
+test('まとめ受付で不足している写真だけを質問し、画像受信後に完了する', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-bulk-missing-photo',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 5,
+        'ai_reply_daily_limit' => 12,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        static function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook($router, textEvent(
+        'EV-BULK-MISSING-PHOTO',
+        'MSG-BULK-MISSING-PHOTO',
+        $owner,
+        '人工芝を検討しています。施工場所は岡崎市です。庭は約30㎡で、現在は土です。12月を希望します。',
+    ));
+
+    $lineCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/message/reply')));
+    assertSame(1, count($lineCalls));
+    assertTrue(str_contains((string) ($lineCalls[0]['body']['messages'][0]['text'] ?? ''), '写真'));
+    [, $beforePhoto] = getInbox($router);
+    assertSame(false, $beforePhoto['items'][0]['needsHuman']);
+    assertSame('', $beforePhoto['items'][0]['collectedFields']['photo']);
+
+    postWebhook($router, imageEvent(
+        'EV-BULK-PHOTO',
+        'MSG-BULK-PHOTO',
+        $owner,
+        1756000001000,
+    ));
+    $lineCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/message/reply')));
+    assertSame(2, count($lineCalls));
+    $completed = (string) ($lineCalls[1]['body']['messages'][0]['text'] ?? '');
+    assertTrue(str_contains($completed, '施工場所の写真：受領済み'));
+    [, $afterPhoto] = getInbox($router);
+    $latest = $afterPhoto['items'][1];
+    assertSame(true, $latest['needsHuman']);
+    assertSame('INTAKE_COMPLETE', $latest['reasonCode']);
+    assertSame('岡崎市', $latest['collectedFields']['region']);
+    assertSame('約30㎡', $latest['collectedFields']['area']);
+    assertSame('土', $latest['collectedFields']['condition']);
+    assertSame('received', $latest['collectedFields']['photo']);
+    assertSame('12月', $latest['collectedFields']['preferredTiming']);
+});
+
+test('料金質問と受付情報が一緒でも金額を答えず、入力済み項目を残して引き継ぐ', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-bulk-price',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reception_max_questions' => 5,
+        'ai_reply_daily_limit' => 12,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        static function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook($router, textEvent(
+        'EV-BULK-PRICE',
+        'MSG-BULK-PRICE',
+        $owner,
+        '人工芝20㎡の料金はいくらですか？住所は愛知県刈谷市で、現在は砂利です。写真はあとで送ります。11月上旬希望です。',
+    ));
+
+    $gatewayCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/ask')));
+    $lineCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/message/reply')));
+    assertSame(0, count($gatewayCalls), '料金質問を外部AIへ送っている');
+    assertSame(1, count($lineCalls));
+    $sent = (string) ($lineCalls[0]['body']['messages'][0]['text'] ?? '');
+    assertTrue(str_contains($sent, '担当者からご連絡'));
+    assertTrue(!preg_match('/\d[\d,]*円/u', $sent), 'AIが金額を回答している');
+
+    [, $inbox] = getInbox($router);
+    $latest = $inbox['items'][0];
+    assertSame(true, $latest['needsHuman']);
+    assertSame('PRICE', $latest['reasonCode']);
+    assertSame('愛知県刈谷市', $latest['collectedFields']['region']);
+    assertSame('20㎡', $latest['collectedFields']['area']);
+    assertSame('砂利', $latest['collectedFields']['condition']);
+    assertSame('promised', $latest['collectedFields']['photo']);
+    assertSame('11月上旬', $latest['collectedFields']['preferredTiming']);
+});
+
 test('最大3質問で地域・広さ・現状を集め、担当者へ引き継ぐ', function (): void {
     $store = freshStore();
     $calls = [];
