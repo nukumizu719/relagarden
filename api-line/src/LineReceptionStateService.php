@@ -149,6 +149,58 @@ final class LineReceptionStateService
     }
 
     /**
+     * 1通に複数の受付項目が書かれていたとき、未入力の項目だけをまとめて保存する。
+     * 値の抽出と安全確認は呼び出し側で済ませ、ここでは既存回答を上書きしない。
+     *
+     * @param array<string,mixed> $state
+     * @param array<string,string> $provided
+     * @return array<string,mixed>
+     */
+    public function captureProvided(array $state, array $provided): array
+    {
+        $state = $this->normalize($state);
+        if (($state['status'] ?? '') === 'handoff') {
+            return $state;
+        }
+
+        /** @var array<string,string> $fields */
+        $fields = $state['collectedFields'];
+        $limits = [
+            'region' => 100,
+            'area' => 100,
+            'condition' => 300,
+            'preferredTiming' => 100,
+        ];
+        foreach (self::fields as $field) {
+            if (($fields[$field] ?? '') !== '') {
+                continue;
+            }
+            $value = is_string($provided[$field] ?? null)
+                ? trim($provided[$field])
+                : '';
+            if ($value === '') {
+                continue;
+            }
+            if ($field === 'photo') {
+                if (!in_array($value, ['received', 'unavailable', 'promised'], true)) {
+                    continue;
+                }
+                $fields[$field] = $value;
+                continue;
+            }
+            $fields[$field] = mb_substr($value, 0, $limits[$field] ?? 100);
+        }
+
+        $awaiting = (string) ($state['awaiting'] ?? '');
+        if ($awaiting !== '' && ($fields[$awaiting] ?? '') !== '') {
+            $state['awaiting'] = '';
+        }
+        $state['collectedFields'] = $fields;
+        $state['turnCount'] = min(99, ((int) ($state['turnCount'] ?? 0)) + 1);
+        return $state;
+    }
+
+    /**
      * 突然の庭仕事相談は、確約せず「場所・写真」だけを受付してから人へ渡す。
      * 元の相談は既存の問い合わせ本文にも残るが、アプリの確認画面でも分かるよう
      * conditionへ最大300文字だけ控える。
