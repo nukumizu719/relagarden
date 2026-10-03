@@ -1619,14 +1619,11 @@ test('いつもありがとうございますは日程相談と誤判定しな�
     assertSame('https://gateway.example/v1/ask', $calls[0]['url'] ?? null);
 });
 
-test('受付形式外の質問・依頼・施工可否はAIへ渡さず固定引継ぎにする', function (): void {
+test('庭仕事ではない形式外質問と単独の日程確認はAIへ渡さず固定引継ぎにする', function (): void {
     $owner = 'UOWNER00000000000000000000000000';
     $messages = [
         'これは何ですか？',
-        '人工芝を施工できますか？',
-        '庭を修理してください',
         '今日来られますか？',
-        '人工芝について教えて',
     ];
     foreach ($messages as $index => $message) {
         $store = freshStore();
@@ -1660,12 +1657,242 @@ test('受付形式外の質問・依頼・施工可否はAIへ渡さず固定引
     }
 });
 
+test('突然の庭仕事相談は場所と写真だけを聞いてから担当者へ引き継ぐ', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-flexible-price',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+
+    postWebhook($router, textEvent(
+        'EV-FLEX-PRICE-1',
+        'MSG-FLEX-PRICE-1',
+        $owner,
+        '木の根を除去してほしいのですが、どのくらい料金かかりますか？',
+    ));
+    postWebhook($router, textEvent(
+        'EV-FLEX-PRICE-2',
+        'MSG-FLEX-PRICE-2',
+        $owner,
+        '愛知県刈谷市です',
+        1756000001000,
+    ));
+    postWebhook($router, imageEvent(
+        'EV-FLEX-PRICE-3',
+        'MSG-FLEX-PRICE-3',
+        $owner,
+        1756000002000,
+    ));
+
+    $gatewayCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/ask')));
+    $lineCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/message/reply')));
+    assertSame(0, count($gatewayCalls), '柔軟受付の内容がGatewayへ送られている');
+    assertSame(3, count($lineCalls));
+    assertTrue(str_contains((string) ($lineCalls[0]['body']['messages'][0]['text'] ?? ''), '市区町村'));
+    assertTrue(str_contains((string) ($lineCalls[0]['body']['messages'][0]['text'] ?? ''), '料金と対応可否'));
+    assertTrue(str_contains((string) ($lineCalls[1]['body']['messages'][0]['text'] ?? ''), '写真'));
+
+    [, $inbox] = getInbox($router);
+    assertSame(false, $inbox['items'][0]['needsHuman']);
+    assertSame('PRICE', $inbox['items'][0]['reasonCode']);
+    assertSame(false, $inbox['items'][1]['needsHuman']);
+    assertSame(true, $inbox['items'][2]['needsHuman']);
+    assertSame('PRICE', $inbox['items'][2]['reasonCode']);
+    assertSame('愛知県刈谷市です', $inbox['items'][2]['collectedFields']['region']);
+    assertSame('received', $inbox['items'][2]['collectedFields']['photo']);
+    assertSame(
+        '木の根を除去してほしいのですが、どのくらい料金かかりますか？',
+        $inbox['items'][2]['collectedFields']['condition'],
+    );
+});
+
+test('料金を含まない突然の庭仕事依頼も柔軟受付を始める', function (): void {
+    $store = freshStore();
+    $calls = [];
+    $owner = 'UOWNER00000000000000000000000000';
+    $config = testConfig([
+        'ai_reply_enabled' => true,
+        'ai_reply_test_mode' => true,
+        'ai_reply_allowed_user_id' => $owner,
+        'ai_reply_session_id' => 'owner-flexible-general',
+        'ai_gateway_base_url' => 'https://gateway.example/v1',
+        'ai_gateway_token' => str_repeat('g', 64),
+        'channel_access_token' => str_repeat('l', 64),
+        'ai_reply_daily_limit' => 4,
+    ]);
+    $reply = new LineOwnerAiReplyService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+    postWebhook($router, textEvent(
+        'EV-FLEX-GENERAL',
+        'MSG-FLEX-GENERAL',
+        $owner,
+        '庭木を剪定してほしいです',
+    ));
+
+    $gatewayCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/ask')));
+    assertSame(0, count($gatewayCalls));
+    assertTrue(str_contains((string) ($calls[0]['body']['messages'][0]['text'] ?? ''), '市区町村'));
+    [, $inbox] = getInbox($router);
+    assertSame(false, $inbox['items'][0]['needsHuman']);
+    assertSame('INTAKE_COMPLETE', $inbox['items'][0]['reasonCode']);
+});
+
+test('柔軟受付中の値引き・契約・クレーム・安全相談は現在の理由で即引き継ぐ', function (): void {
+    $owner = 'UOWNER00000000000000000000000000';
+    $cases = [
+        ['値引きしてください', 'DISCOUNT'],
+        ['契約について確認したいです', 'CONTRACT'],
+        ['クレームです', 'COMPLAINT'],
+        ['危険です', 'SAFETY'],
+    ];
+    foreach ($cases as $index => [$message, $reason]) {
+        $store = freshStore();
+        $calls = [];
+        $config = testConfig([
+            'ai_reply_enabled' => true,
+            'ai_reply_test_mode' => true,
+            'ai_reply_allowed_user_id' => $owner,
+            'ai_reply_session_id' => 'owner-flexible-risk-' . $index,
+            'ai_gateway_base_url' => 'https://gateway.example/v1',
+            'ai_gateway_token' => str_repeat('g', 64),
+            'channel_access_token' => str_repeat('l', 64),
+            'ai_reply_daily_limit' => 4,
+        ]);
+        $reply = new LineOwnerAiReplyService(
+            $config,
+            $store,
+            function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+                $calls[] = compact('url', 'headers', 'body', 'timeout');
+                return ['status' => 200, 'body' => '{}'];
+            },
+        );
+        $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+        postWebhook($router, textEvent(
+            'EV-FLEX-RISK-START-' . $index,
+            'MSG-FLEX-RISK-START-' . $index,
+            $owner,
+            '庭木を剪定してほしいです',
+        ));
+        postWebhook($router, textEvent(
+            'EV-FLEX-RISK-' . $index,
+            'MSG-FLEX-RISK-' . $index,
+            $owner,
+            $message,
+            1756000001000,
+        ));
+
+        $gatewayCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/ask')));
+        assertSame(0, count($gatewayCalls), $message . ' がGatewayへ送られている');
+        [, $inbox] = getInbox($router);
+        assertSame(true, $inbox['items'][1]['needsHuman']);
+        assertSame($reason, $inbox['items'][1]['reasonCode']);
+    }
+});
+
+test('通常受付中の料金・日程・施工可否は取得済み情報を残して柔軟受付へ切り替える', function (): void {
+    $owner = 'UOWNER00000000000000000000000000';
+    $cases = [
+        ['人工芝20㎡だと料金はいくらですか？', 'PRICE'],
+        ['人工芝の施工日程はいつですか？', 'SCHEDULE_CONFIRMATION'],
+        ['木の根も抜けますか？', 'CAPABILITY'],
+    ];
+    foreach ($cases as $index => [$question, $reason]) {
+        $store = freshStore();
+        $calls = [];
+        $gatewayCount = 0;
+        $config = testConfig([
+            'ai_reply_enabled' => true,
+            'ai_reply_test_mode' => true,
+            'ai_reply_allowed_user_id' => $owner,
+            'ai_reply_session_id' => 'owner-flexible-midflow-' . $index,
+            'ai_gateway_base_url' => 'https://gateway.example/v1',
+            'ai_gateway_token' => str_repeat('g', 64),
+            'channel_access_token' => str_repeat('l', 64),
+            'ai_reply_daily_limit' => 4,
+        ]);
+        $reply = new LineOwnerAiReplyService(
+            $config,
+            $store,
+            function (string $url, array $headers, array $body, int $timeout) use (&$calls, &$gatewayCount): array {
+                $calls[] = compact('url', 'headers', 'body', 'timeout');
+                if (!str_contains($url, '/ask')) return ['status' => 200, 'body' => '{}'];
+                $gatewayCount++;
+                return [
+                    'status' => 200,
+                    'body' => json_encode(['reply' => $gatewayCount === 1 ? 'ASK_LOCATION' : 'ASK_AREA']),
+                ];
+            },
+        );
+        $router = new LineRouter($config, $store, new FakeLineProfile(), $reply);
+        postWebhook($router, textEvent(
+            'EV-MIDFLOW-START-' . $index,
+            'MSG-MIDFLOW-START-' . $index,
+            $owner,
+            '人工芝について相談です',
+        ));
+        postWebhook($router, textEvent(
+            'EV-MIDFLOW-REGION-' . $index,
+            'MSG-MIDFLOW-REGION-' . $index,
+            $owner,
+            '愛知県刈谷市です',
+            1756000001000,
+        ));
+        postWebhook($router, textEvent(
+            'EV-MIDFLOW-QUESTION-' . $index,
+            'MSG-MIDFLOW-QUESTION-' . $index,
+            $owner,
+            $question,
+            1756000002000,
+        ));
+        postWebhook($router, imageEvent(
+            'EV-MIDFLOW-PHOTO-' . $index,
+            'MSG-MIDFLOW-PHOTO-' . $index,
+            $owner,
+            1756000003000,
+        ));
+
+        $gatewayCalls = array_values(array_filter($calls, static fn (array $call): bool => str_contains($call['url'], '/ask')));
+        assertSame(1, count($gatewayCalls), $question . ' が柔軟受付切替後もGatewayへ送られている');
+        [, $inbox] = getInbox($router);
+        $latest = $inbox['items'][3];
+        assertSame(true, $latest['needsHuman']);
+        assertSame($reason, $latest['reasonCode']);
+        assertSame('愛知県刈谷市です', $latest['collectedFields']['region']);
+        assertSame('received', $latest['collectedFields']['photo']);
+        assertSame($question, $latest['collectedFields']['condition']);
+    }
+});
+
 test('質問中も項目ごとの形式外回答をAIへ渡さない', function (): void {
     $owner = 'UOWNER00000000000000000000000000';
     $cases = [
         ['ASK_LOCATION', 'どこまで来られますか？'],
         ['ASK_AREA', '広さは多分です'],
-        ['ASK_CONDITION', '砂利ですが今日来られますか？'],
+        ['ASK_CONDITION', '砂利かもしれません'],
         ['ASK_PHOTO', '写真送れますか？'],
         ['ASK_TIMING', '今日来られますか？'],
     ];
@@ -1926,7 +2153,7 @@ test('同じ本人の並行受付でも質問数は3回を超えない', functio
     $saved = $states->load($owner, $sessionId);
     assertSame(3, $saved['questionsAsked']);
     assertSame('handoff', $saved['status']);
-    assertSame('UNSAFE_INPUT', $saved['reasonCode']);
+    assertSame('INTAKE_COMPLETE', $saved['reasonCode']);
 });
 
 test('引継ぎ後の新着は保存するがGatewayにもLINEにも送らない', function (): void {
