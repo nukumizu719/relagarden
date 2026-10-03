@@ -21,6 +21,7 @@ final class LineReceptionStateService
         'MANUAL_ONLY',
         'MANUAL_TAKEOVER',
         'PRICE',
+        'CAPABILITY',
         'SCHEDULE_CONFIRMATION',
         'DISCOUNT',
         'CONTRACT',
@@ -38,6 +39,9 @@ final class LineReceptionStateService
         'STATE_WRITE_FAILED',
         'LOCK_FAILED',
     ];
+
+    /** @var list<string> */
+    private const flexibleReasons = ['PRICE', 'CAPABILITY', 'SCHEDULE_CONFIRMATION', 'INTAKE_COMPLETE'];
 
     public function __construct(
         private readonly LineStore $store,
@@ -142,6 +146,69 @@ final class LineReceptionStateService
         $state['collectedFields'] = $fields;
         $state['turnCount'] = min(99, ((int) ($state['turnCount'] ?? 0)) + 1);
         return $state;
+    }
+
+    /**
+     * 突然の庭仕事相談は、確約せず「場所・写真」だけを受付してから人へ渡す。
+     * 元の相談は既存の問い合わせ本文にも残るが、アプリの確認画面でも分かるよう
+     * conditionへ最大300文字だけ控える。
+     *
+     * @param array<string,mixed> $state
+     * @return array<string,mixed>
+     */
+    public function beginFlexible(array $state, string $reasonCode, string $inquiry): array
+    {
+        $state = $this->normalize($state);
+        if (($state['status'] ?? '') === 'handoff'
+            || !in_array($reasonCode, self::flexibleReasons, true)
+        ) {
+            return $this->handoff($state, 'AI_INVALID');
+        }
+        /** @var array<string,string> $fields */
+        $fields = $state['collectedFields'];
+        if (($fields['condition'] ?? '') === '') {
+            $fields['condition'] = mb_substr(trim($inquiry), 0, 300);
+        }
+        $state['collectedFields'] = $fields;
+        $state['reasonCode'] = $reasonCode;
+        $state['turnCount'] = min(99, ((int) ($state['turnCount'] ?? 0)) + 1);
+        return $state;
+    }
+
+    /** @param array<string,mixed> $state */
+    public function isFlexible(array $state): bool
+    {
+        $state = $this->normalize($state);
+        return ($state['status'] ?? '') === 'collecting'
+            && in_array($state['reasonCode'] ?? '', self::flexibleReasons, true);
+    }
+
+    /** @param array<string,mixed> $state */
+    public function canBeginFlexible(array $state): bool
+    {
+        $state = $this->normalize($state);
+        return ($state['status'] ?? '') === 'collecting'
+            && ($state['reasonCode'] ?? '') === '';
+    }
+
+    /** @param array<string,mixed> $state @return list<string> */
+    public function flexibleMissing(array $state): array
+    {
+        $state = $this->normalize($state);
+        /** @var array<string,string> $fields */
+        $fields = $state['collectedFields'];
+        return array_values(array_filter(
+            ['region', 'photo'],
+            static fn (string $field): bool => ($fields[$field] ?? '') === '',
+        ));
+    }
+
+    /** @param array<string,mixed> $state */
+    public function flexibleReason(array $state): string
+    {
+        $state = $this->normalize($state);
+        $reason = is_string($state['reasonCode'] ?? null) ? $state['reasonCode'] : '';
+        return in_array($reason, self::flexibleReasons, true) ? $reason : 'INTAKE_COMPLETE';
     }
 
     /** @param array<string,mixed> $state @return list<string> */

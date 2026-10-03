@@ -142,7 +142,24 @@ final class LineOwnerAiReplyService
         }
 
         $riskReason = $kind === 'text' ? $this->requiresHumanReason($messageText) : '';
-        if ($riskReason !== '') {
+        $isFlexible = $states->isFlexible($state);
+        $startsFlexible = !$isFlexible
+            && $states->canBeginFlexible($state)
+            && $kind === 'text'
+            && in_array($riskReason, ['', 'PRICE', 'SCHEDULE_CONFIRMATION'], true)
+            && $this->isFlexibleGardenInquiry($messageText)
+            && ($riskReason !== '' || !$this->isSafeReceptionInput($state, $kind, $messageText));
+        if ($startsFlexible) {
+            $deferredReason = $riskReason !== ''
+                ? $riskReason
+                : ($this->isCapabilityInquiry($messageText) ? 'CAPABILITY' : 'INTAKE_COMPLETE');
+            $state = $states->beginFlexible($state, $deferredReason, $messageText);
+            if (!$states->save($lineUserId, $sessionId, $state)) {
+                $this->store->log('E_AI_RECEPTION_STATE', 1);
+                return $states->failStop($lineUserId, $sessionId, 'STATE_WRITE_FAILED');
+            }
+            $isFlexible = true;
+        } elseif (!$isFlexible && $riskReason !== '') {
             if (!$this->takeDailyTurn($lineUserId, $dailyLimit)) {
                 return $this->stopWithoutReply($states, $state, $lineUserId, $sessionId, 'LOCAL_LIMIT');
             }
@@ -154,6 +171,22 @@ final class LineOwnerAiReplyService
                 $riskReason,
                 $replyToken,
                 $lineToken,
+            );
+        }
+
+        if ($isFlexible) {
+            return $this->continueFlexibleReception(
+                $states,
+                $state,
+                $lineUserId,
+                $sessionId,
+                $messageText,
+                $replyToken,
+                $kind,
+                $lineToken,
+                $dailyLimit,
+                $riskReason,
+                $startsFlexible,
             );
         }
 
@@ -360,6 +393,31 @@ final class LineOwnerAiReplyService
         return preg_match('/[?？]|(?:してください|してほしい|お願い(?:します|できます)|できますか|できるでしょうか|可能ですか|修理|直して|今日|今から|来られ|来れ|対応して|教えて)/u', $text) === 1;
     }
 
+    private function isFlexibleGardenInquiry(string $text): bool
+    {
+        $value = trim($text);
+        if ($value === '' || mb_strlen($value) > 300) {
+            return false;
+        }
+        $gardenWork = preg_match(
+            '/(?:人工芝|お?庭|雑草|草刈|防草|芝生|外構|砂利|庭木|植木|木の根|根っこ|抜根|伐採|剪定|枝|落ち葉|排水|水はけ|ぬかるみ|花壇|レンガ|フェンス|ウッドデッキ|除草)/u',
+            $value,
+        ) === 1;
+        $request = preg_match(
+            '/[?？]|(?:相談|お願い|してほしい|してください|できます|可能|見積|料金|いくら|費用|困って|検討|除去|撤去|敷|刈|抜|切)/u',
+            $value,
+        ) === 1;
+        return $gardenWork && $request;
+    }
+
+    private function isCapabilityInquiry(string $text): bool
+    {
+        return preg_match(
+            '/(?:できますか|できるでしょうか|可能ですか|対応できますか|お願いできますか|してもらえますか|やれますか|抜けますか|切れますか)/u',
+            $text,
+        ) === 1;
+    }
+
     private function fieldForDecision(string $decision): ?string
     {
         return match ($decision) {
@@ -394,6 +452,93 @@ final class LineOwnerAiReplyService
             'preferredTiming' => 'お問い合わせありがとうございます。施工をご希望の時期を教えていただけますか。',
             default => self::handoffReply,
         };
+    }
+
+    /** @param array<string,mixed> $state @return array{needsHuman:bool,reasonCode:string,collectedFields:array<string,string>} */
+    private function continueFlexibleReception(
+        LineReceptionStateService $states,
+        array $state,
+        string $lineUserId,
+        string $sessionId,
+        string $messageText,
+        string $replyToken,
+        string $kind,
+        string $lineToken,
+        int $dailyLimit,
+        string $riskReason,
+        bool $startsFlexible,
+    ): array {
+        $reason = $states->flexibleReason($state);
+        if (!$startsFlexible) {
+            if ($riskReason !== '' || !$this->isSafeReceptionInput($state, $kind, $messageText)) {
+                $handoffReason = $riskReason !== '' ? $riskReason : $reason;
+                if (!$this->takeDailyTurn($lineUserId, $dailyLimit)) {
+                    return $this->stopWithoutReply($states, $state, $lineUserId, $sessionId, 'LOCAL_LIMIT');
+                }
+                return $this->handoff(
+                    $states,
+                    $state,
+                    $lineUserId,
+                    $sessionId,
+                    $handoffReason,
+                    $replyToken,
+                    $lineToken,
+                );
+            }
+            $state = $states->capture($state, $kind, $messageText);
+            if (!$states->save($lineUserId, $sessionId, $state)) {
+                $this->store->log('E_AI_RECEPTION_STATE', 1);
+                return $states->failStop($lineUserId, $sessionId, 'STATE_WRITE_FAILED');
+            }
+        }
+
+        $missing = $states->flexibleMissing($state);
+        if ($missing === [] || $states->reachedQuestionLimit($state)) {
+            if (!$this->takeDailyTurn($lineUserId, $dailyLimit)) {
+                return $this->stopWithoutReply($states, $state, $lineUserId, $sessionId, 'LOCAL_LIMIT');
+            }
+            return $this->handoff(
+                $states,
+                $state,
+                $lineUserId,
+                $sessionId,
+                $reason,
+                $replyToken,
+                $lineToken,
+            );
+        }
+
+        if (!$this->takeDailyTurn($lineUserId, $dailyLimit)) {
+            return $this->stopWithoutReply($states, $state, $lineUserId, $sessionId, 'LOCAL_LIMIT');
+        }
+        $field = $missing[0];
+        $state = $states->ask($state, $field);
+        if (!$states->save($lineUserId, $sessionId, $state)) {
+            $this->store->log('E_AI_RECEPTION_STATE', 1);
+            return $states->failStop($lineUserId, $sessionId, 'STATE_WRITE_FAILED');
+        }
+        $reply = $this->flexibleReplyForField($field, $reason);
+        if (!$this->sendOwnerReply($lineUserId, $replyToken, $reply, $lineToken)) {
+            return $this->stopWithoutReply($states, $state, $lineUserId, $sessionId, 'REPLY_FAILED');
+        }
+        $this->store->log('I_AI_FLEXIBLE_RECEPTION', 1);
+        return $states->metadata($state);
+    }
+
+    private function flexibleReplyForField(string $field, string $reason): string
+    {
+        if ($field === 'region') {
+            return match ($reason) {
+                'PRICE' => 'お問い合わせありがとうございます。料金と対応可否は担当者が確認します。まず、施工場所の市区町村を教えていただけますか。',
+                'CAPABILITY' => 'お問い合わせありがとうございます。対応可否は担当者が確認します。まず、施工場所の市区町村を教えていただけますか。',
+                'SCHEDULE_CONFIRMATION' => 'お問い合わせありがとうございます。日程と対応可否は担当者が確認します。まず、施工場所の市区町村を教えていただけますか。',
+                default => 'お問い合わせありがとうございます。内容と対応可否は担当者が確認します。まず、施工場所の市区町村を教えていただけますか。',
+            };
+        }
+        if ($field === 'photo') {
+            return '確認のため、可能でしたら対象箇所の写真を送っていただけますか。';
+        }
+        return self::handoffReply;
     }
 
     /** @param array<string,mixed> $state @return array{needsHuman:bool,reasonCode:string,collectedFields:array<string,string>} */
