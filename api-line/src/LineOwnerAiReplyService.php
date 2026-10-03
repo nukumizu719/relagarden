@@ -589,34 +589,24 @@ final class LineOwnerAiReplyService
         if (!is_string($json)) {
             throw new \RuntimeException('E_JSON_ENCODE');
         }
-        $context = stream_context_create([
-            'http' => [
-                'method' => 'POST',
-                'header' => implode("\r\n", $headerLines),
-                'content' => $json,
-                'timeout' => $timeoutSeconds,
-                'ignore_errors' => true,
-            ],
+        if (!function_exists('curl_init')) {
+            throw new \RuntimeException('E_HTTP_CLIENT');
+        }
+        $handle = curl_init($url);
+        if ($handle === false) {
+            throw new \RuntimeException('E_HTTP_CLIENT');
+        }
+        curl_setopt_array($handle, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => $timeoutSeconds,
+            CURLOPT_HTTPHEADER => $headerLines,
+            CURLOPT_POSTFIELDS => $json,
         ]);
-        $response = @file_get_contents($url, false, $context);
-        if (function_exists('http_get_last_response_headers')) {
-            $lastHeaders = http_get_last_response_headers();
-            $responseHeaders = is_array($lastHeaders) ? $lastHeaders : [];
-        } else {
-            // PHP 8.3以前では、file_get_contentsがローカルスコープへ
-            // http_response_headerを追加する。変数を直接参照すると新しいPHPで
-            // 非推奨警告になるため、旧版だけget_defined_vars経由で読む。
-            $scope = get_defined_vars();
-            $legacyHeaders = $scope['http_response_header'] ?? [];
-            $responseHeaders = is_array($legacyHeaders) ? $legacyHeaders : [];
-        }
-        $status = 0;
-        if (isset($responseHeaders[0])
-            && preg_match('/\s(\d{3})\s/', $responseHeaders[0], $matches) === 1
-        ) {
-            $status = (int) $matches[1];
-        }
-        if ($response === false && $status === 0) {
+        $response = curl_exec($handle);
+        $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        curl_close($handle);
+        if ($response === false || $status === 0) {
             throw new \RuntimeException('E_HTTP');
         }
         return ['status' => $status, 'body' => is_string($response) ? $response : ''];
