@@ -128,13 +128,27 @@ final class LineRouter
                     throw new LineError(503, 'AI受付はまだ準備中です', 'E_RESET_CONFIG');
                 }
                 $lockKey = 'reception_' . LineStore::hashKey($lineUserId . "\0" . $sessionId);
-                $reset = $this->store->synchronized(
-                    $lockKey,
-                    fn (): bool => (new LineReceptionStateService(
+                $reset = $this->store->synchronized($lockKey, function () use ($lineUserId, $sessionId): bool {
+                    $states = new LineReceptionStateService(
                         $this->store,
                         $this->config->int('ai_reception_max_questions'),
-                    ))->reset($lineUserId, $sessionId)
-                );
+                    );
+                    if (!$states->reset($lineUserId, $sessionId)) {
+                        return false;
+                    }
+                    // 本人限定テストでは、明示確認した「受付を再開」を新しい
+                    // 一連テストとして扱う。通常のWebhook回数制限や他人の記録は
+                    // 触らず、許可済み本人のAI返信回数だけを初期化する。
+                    if ($this->config->bool('ai_reply_test_mode')) {
+                        $rateKey = 'ai_owner_' . LineStore::hashKey($lineUserId);
+                        $this->store->delete('rate', $rateKey);
+                        if ($this->store->exists('rate', $rateKey)) {
+                            return false;
+                        }
+                        $this->store->log('I_AI_RECEPTION_TEST_RESTART', 1);
+                    }
+                    return true;
+                });
                 if (!$reset) {
                     throw new LineError(500, '停止状態を解除できません', 'E_RESET_WRITE');
                 }

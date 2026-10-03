@@ -2120,7 +2120,7 @@ test('停止解除は許可本人の現在sessionだけを初期化する', func
     assertSame(1, $states->load($owner, $currentSession)['questionsAsked']);
 });
 
-test('停止解除しても本日4回の安全上限は増やさない', function (): void {
+test('本人限定テストを確認付きで再開すると本人の受付回数だけ初期化する', function (): void {
     $store = freshStore();
     $owner = 'UOWNER00000000000000000000000000';
     $sessionId = 'owner-reset-keeps-daily-limit';
@@ -2162,8 +2162,10 @@ test('停止解除しても本日4回の安全上限は増やさない', functio
     assertSame(200, $status);
 
     postWebhook($router, textEvent('EV-RESET-LIMIT', 'MSG-RESET-LIMIT', $owner, '人工芝について相談です'));
-    assertSame(0, count($calls), '停止解除で本日の安全上限を増やしている');
-    assertSame('LOCAL_LIMIT', $states->load($owner, $sessionId)['reasonCode']);
+    assertSame(2, count($calls), '本人限定テストのGatewayとLINE返信が再開していない');
+    assertSame('collecting', $states->load($owner, $sessionId)['status']);
+    assertSame(1, $states->load($owner, $sessionId)['questionsAsked']);
+    assertTrue(str_contains(readLog($store), 'I_AI_RECEPTION_TEST_RESTART'));
 });
 
 // ── 会話途中のAI受付解除 ────────────────────────────────
