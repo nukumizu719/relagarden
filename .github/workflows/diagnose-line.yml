@@ -10,6 +10,24 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
+      - name: Check LINE channel token safely
+        env:
+          CHANNEL_ACCESS_TOKEN: ${{ secrets.RELAGARDEN_LINE_CHANNEL_ACCESS_TOKEN }}
+        run: |
+          set -eu
+          set +x
+          if [ -z "$CHANNEL_ACCESS_TOKEN" ]; then
+            echo 'LINE_BOT_INFO_HTTP=TOKEN_MISSING'
+            exit 0
+          fi
+          status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $CHANNEL_ACCESS_TOKEN" \
+            https://api.line.me/v2/bot/info || true)"
+          case "$status" in
+            000|2??|4??|5??) echo "LINE_BOT_INFO_HTTP=$status" ;;
+            *) echo 'LINE_BOT_INFO_HTTP=UNKNOWN' ;;
+          esac
+
       - name: Read recent safe LINE result codes
         env:
           XSERVER_HOST: ${{ secrets.XSERVER_HOST }}
