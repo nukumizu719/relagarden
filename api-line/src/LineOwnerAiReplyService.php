@@ -9,7 +9,8 @@ namespace Relagarden\Line;
  *
  * AI ProviderのAPIキーは持たない。Gateway用トークンとLINEチャネル
  * アクセストークンは、public_html外の設定ファイルからだけ受け取る。
- * プッシュ送信は使わず、届いた各イベントのreplyTokenへ1回だけ返信する。
+ * 届いた各イベントのreplyTokenへ先に返信する。LINEが明確に拒否した場合だけ、
+ * 許可済みの本人userId 1件へプッシュ送信で補う。
  * 本人限定の安全設定では、受付5項目を確認してから担当者へ引き継ぐ。
  */
 final class LineOwnerAiReplyService
@@ -270,9 +271,7 @@ final class LineOwnerAiReplyService
             return $states->failStop($lineUserId, $sessionId, 'STATE_WRITE_FAILED');
         }
         $reply = $this->replyForField($field);
-        if (!$this->validReplyToken($replyToken)
-            || !$this->sendLineReply($replyToken, $reply, $lineToken)
-        ) {
+        if (!$this->sendOwnerReply($lineUserId, $replyToken, $reply, $lineToken)) {
             return $this->stopWithoutReply($states, $state, $lineUserId, $sessionId, 'REPLY_FAILED');
         }
         return $states->metadata($state);
@@ -412,8 +411,7 @@ final class LineOwnerAiReplyService
             $this->store->log('E_AI_RECEPTION_STATE', 1);
             return $states->failStop($lineUserId, $sessionId, 'STATE_WRITE_FAILED');
         }
-        $sent = $this->validReplyToken($replyToken)
-            && $this->sendLineReply($replyToken, self::handoffReply, $lineToken);
+        $sent = $this->sendOwnerReply($lineUserId, $replyToken, self::handoffReply, $lineToken);
         if (!$sent) {
             return $this->stopWithoutReply($states, $state, $lineUserId, $sessionId, 'REPLY_FAILED');
         }
@@ -458,11 +456,33 @@ final class LineOwnerAiReplyService
         return $replyToken !== '' && strlen($replyToken) <= 512;
     }
 
-    private function sendLineReply(
+    private function sendOwnerReply(
+        string $lineUserId,
         string $replyToken,
         string $reply,
         string $lineToken,
     ): bool {
+        if (!$this->validReplyToken($replyToken)) {
+            $this->store->log('E_AI_REPLY_TOKEN', 1);
+            return false;
+        }
+        $result = $this->sendLineReply($replyToken, $reply, $lineToken);
+        if ($result === 'sent') {
+            return true;
+        }
+        // 通信例外はLINE側で送信済みか判断できないため、二重送信を避けて止める。
+        if ($result === 'uncertain') {
+            return false;
+        }
+        return $this->sendOwnerPushFallback($lineUserId, $reply, $lineToken);
+    }
+
+    /** @return 'sent'|'rejected'|'uncertain' */
+    private function sendLineReply(
+        string $replyToken,
+        string $reply,
+        string $lineToken,
+    ): string {
 
         try {
             $line = ($this->postJson)(
@@ -481,15 +501,58 @@ final class LineOwnerAiReplyService
                 $this->positiveTimeout('line_reply_timeout_seconds', 5),
             );
         } catch (\Throwable $e) {
-            $this->store->log('E_AI_LINE_REPLY', 1);
-            return false;
+            $this->store->log('E_AI_LINE_REPLY_UNCERTAIN', 1);
+            return 'uncertain';
         }
 
         if ($line['status'] < 200 || $line['status'] >= 300) {
-            $this->store->log('E_AI_LINE_REPLY', 1);
-            return false;
+            $status = max(0, min(999, (int) $line['status']));
+            $this->store->log('E_AI_LINE_REPLY_' . $status, 1);
+            // 5xx・回数制限・転送応答は結果が不確実なので代替送信しない。
+            return $status >= 400 && $status < 500 && $status !== 429
+                ? 'rejected'
+                : 'uncertain';
         }
         $this->store->log('I_AI_OWNER_REPLIED', 1);
+        return 'sent';
+    }
+
+    private function sendOwnerPushFallback(
+        string $lineUserId,
+        string $reply,
+        string $lineToken,
+    ): bool {
+        $allowed = $this->config->str('ai_reply_allowed_user_id');
+        if ($allowed === '' || !hash_equals($allowed, $lineUserId)) {
+            $this->store->log('E_AI_LINE_PUSH_TARGET', 1);
+            return false;
+        }
+        try {
+            $line = ($this->postJson)(
+                'https://api.line.me/v2/bot/message/push',
+                [
+                    'Authorization' => 'Bearer ' . $lineToken,
+                    'Content-Type' => 'application/json',
+                ],
+                [
+                    'to' => $lineUserId,
+                    'messages' => [[
+                        'type' => 'text',
+                        'text' => mb_substr($reply, 0, self::maxReplyLength),
+                    ]],
+                ],
+                $this->positiveTimeout('line_reply_timeout_seconds', 5),
+            );
+        } catch (\Throwable $e) {
+            $this->store->log('E_AI_LINE_PUSH_UNCERTAIN', 1);
+            return false;
+        }
+        if ($line['status'] < 200 || $line['status'] >= 300) {
+            $status = max(0, min(999, (int) $line['status']));
+            $this->store->log('E_AI_LINE_PUSH_' . $status, 1);
+            return false;
+        }
+        $this->store->log('I_AI_OWNER_PUSH_FALLBACK', 1);
         return true;
     }
 
