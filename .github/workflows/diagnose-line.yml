@@ -20,13 +20,21 @@ jobs:
             echo 'LINE_BOT_INFO_HTTP=TOKEN_MISSING'
             exit 0
           fi
-          status="$(curl -sS -o /dev/null -w '%{http_code}' \
+          response_file="$RUNNER_TEMP/line-bot-info.json"
+          status="$(curl -sS -o "$response_file" -w '%{http_code}' \
             -H "Authorization: Bearer $CHANNEL_ACCESS_TOKEN" \
             https://api.line.me/v2/bot/info || true)"
           case "$status" in
             000|2??|4??|5??) echo "LINE_BOT_INFO_HTTP=$status" ;;
             *) echo 'LINE_BOT_INFO_HTTP=UNKNOWN' ;;
           esac
+          if [ "$status" = 200 ]; then
+            if [ "$(jq -r '.basicId // ""' "$response_file")" = '@073lvwdr' ]; then
+              echo 'LINE_BOT_ACCOUNT=MATCH'
+            else
+              echo 'LINE_BOT_ACCOUNT=MISMATCH'
+            fi
+          fi
 
       - name: Read recent safe LINE result codes
         env:
