@@ -212,42 +212,54 @@ final class LineOwnerAiReplyService
             return $this->stopWithoutReply($states, $state, $lineUserId, $sessionId, 'LOCAL_LIMIT');
         }
 
-        $prompt = $this->receptionPrompt($messageText, $states->missing($state));
-
         $field = null;
-        try {
-            $gateway = ($this->postJson)(
-                $gatewayBase . '/ask',
-                [
-                    'Authorization' => 'Bearer ' . $gatewayToken,
-                    'Content-Type' => 'application/json',
-                ],
-                [
-                    'prompt' => mb_substr($prompt, 0, self::maxPromptLength),
-                    'feature' => 'line_reception',
-                ],
-                $this->positiveTimeout('ai_gateway_timeout_seconds', 8),
-            );
-        } catch (\Throwable $e) {
-            $this->store->log('E_AI_GATEWAY', 1);
-            $gateway = ['status' => 0, 'body' => ''];
-        }
+        $collected = is_array($state['collectedFields'] ?? null)
+            ? $state['collectedFields']
+            : [];
+        $hasCollectedAnswer = count(array_filter(
+            $collected,
+            static fn (mixed $value): bool => is_string($value) && $value !== '',
+        )) > 0;
 
-        if ($gateway['status'] === 200) {
-            $gatewayBody = json_decode($gateway['body'], true);
-            $decision = is_array($gatewayBody) && is_string($gatewayBody['reply'] ?? null)
-                ? trim($gatewayBody['reply'])
-                : '';
-            $candidate = $this->fieldForDecision($decision);
-            if ($candidate !== null && in_array($candidate, $states->missing($state), true)) {
-                $field = $candidate;
-            } else {
-                // 入力はこの手前の固定ルールで安全確認済み。Claudeが停止や形式外を
-                // 返しても自由文は送らず、不足項目を1つだけ尋ねて最低限の受付を続ける。
-                $this->store->log($decision === 'ACK_HANDOFF' ? 'I_AI_MINIMUM_FALLBACK' : 'E_AI_RESPONSE', 1);
+        // 一連の受付が始まった後は、外部AIの応答を待たず、不足項目を
+        // 決まった順番で即時に尋ねる。通信遅延やGateway障害があっても
+        // 「場所へ回答したところで無言停止」させない。
+        if (!$hasCollectedAnswer) {
+            $prompt = $this->receptionPrompt($messageText, $states->missing($state));
+            try {
+                $gateway = ($this->postJson)(
+                    $gatewayBase . '/ask',
+                    [
+                        'Authorization' => 'Bearer ' . $gatewayToken,
+                        'Content-Type' => 'application/json',
+                    ],
+                    [
+                        'prompt' => mb_substr($prompt, 0, self::maxPromptLength),
+                        'feature' => 'line_reception',
+                    ],
+                    $this->positiveTimeout('ai_gateway_timeout_seconds', 8),
+                );
+            } catch (\Throwable $e) {
+                $this->store->log('E_AI_GATEWAY', 1);
+                $gateway = ['status' => 0, 'body' => ''];
             }
-        } elseif ($gateway['status'] !== 0) {
-            $this->store->log('E_AI_GATEWAY', 1);
+
+            if ($gateway['status'] === 200) {
+                $gatewayBody = json_decode($gateway['body'], true);
+                $decision = is_array($gatewayBody) && is_string($gatewayBody['reply'] ?? null)
+                    ? trim($gatewayBody['reply'])
+                    : '';
+                $candidate = $this->fieldForDecision($decision);
+                if ($candidate !== null && in_array($candidate, $states->missing($state), true)) {
+                    $field = $candidate;
+                } else {
+                    // 入力はこの手前の固定ルールで安全確認済み。Claudeが停止や形式外を
+                    // 返しても自由文は送らず、不足項目を1つだけ尋ねて最低限の受付を続ける。
+                    $this->store->log($decision === 'ACK_HANDOFF' ? 'I_AI_MINIMUM_FALLBACK' : 'E_AI_RESPONSE', 1);
+                }
+            } elseif ($gateway['status'] !== 0) {
+                $this->store->log('E_AI_GATEWAY', 1);
+            }
         }
 
         $field ??= $states->missing($state)[0];
