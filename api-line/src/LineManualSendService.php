@@ -75,7 +75,7 @@ final class LineManualSendService
 
         $lineToken = $this->config->str('channel_access_token');
         $dailyLimit = $this->config->int('manual_send_daily_limit');
-        if (strlen($lineToken) < 16 || $dailyLimit < 1) {
+        if (strlen($lineToken) < 16 || $dailyLimit < 0) {
             throw new LineError(503, 'LINE送信はまだ準備中です', 'E_SEND_CONFIG');
         }
 
@@ -95,16 +95,20 @@ final class LineManualSendService
             throw new LineError(500, 'ただいま送信を記録できません', 'E_SEND_CLAIM');
         }
 
-        try {
-            $limiter = new LineRateLimiter($this->store, 86400);
-            $limiter->hit(
-                'manual_send_' . LineStore::hashKey($lineUserId),
-                $dailyLimit,
-                '本人限定テストの送信上限に達しました'
-            );
-        } catch (LineError $e) {
-            $this->store->delete('requests', $requestKey);
-            throw $e;
+        // 0は、本人限定テスト中の人工的な日次上限を設けない設定。
+        // 宛先完全一致・confirmed・requestId二重送信防止は0でも必ず残る。
+        if ($dailyLimit > 0) {
+            try {
+                $limiter = new LineRateLimiter($this->store, 86400);
+                $limiter->hit(
+                    'manual_send_' . LineStore::hashKey($lineUserId),
+                    $dailyLimit,
+                    '本人限定テストの送信上限に達しました'
+                );
+            } catch (LineError $e) {
+                $this->store->delete('requests', $requestKey);
+                throw $e;
+            }
         }
 
         try {

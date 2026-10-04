@@ -2958,6 +2958,88 @@ test('本人限定テストの手動送信回数だけを確認後にリセッ�
     assertTrue(str_contains(readLog($store), 'I_MANUAL_SEND_TEST_RESET'));
 });
 
+test('日次上限0なら本人限定の確認後送信だけ人工上限なしで続けられる', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $calls = [];
+    $config = testConfig([
+        'manual_send_enabled' => true,
+        'manual_send_test_mode' => true,
+        'manual_send_allowed_user_id' => $owner,
+        'manual_send_daily_limit' => 0,
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $service = new LineManualSendService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), null, $service);
+
+    for ($i = 1; $i <= 25; $i++) {
+        [$status] = postSend($router, [
+            'confirmed' => true,
+            'lineUserId' => $owner,
+            'text' => '上限なしテスト' . $i,
+            'requestId' => 'request_unlimited_' . $i,
+        ]);
+        assertSame(200, $status, $i . '回目で人工上限に達した');
+    }
+    $requestCount = count($store->keys('requests'));
+    [$resetStatus] = postSendReset($router, [
+        'confirmed' => true,
+        'lineUserId' => $owner,
+    ]);
+    [$duplicateStatus, $duplicate] = postSend($router, [
+        'confirmed' => true,
+        'lineUserId' => $owner,
+        'text' => '上限なしテスト1',
+        'requestId' => 'request_unlimited_1',
+    ]);
+
+    assertSame(25, count($calls));
+    assertSame(200, $resetStatus);
+    assertSame($requestCount, count($store->keys('requests')), 'リセットで送信済み印が消えた');
+    assertSame(200, $duplicateStatus);
+    assertSame(true, $duplicate['duplicate'] ?? null);
+    assertSame(25, count($calls), '同じrequestIdを外部へ再送した');
+});
+
+test('負の日次上限は無制限にせず設定エラーで停止する', function (): void {
+    $store = freshStore();
+    $owner = 'UOWNER00000000000000000000000000';
+    $calls = [];
+    $config = testConfig([
+        'manual_send_enabled' => true,
+        'manual_send_test_mode' => true,
+        'manual_send_allowed_user_id' => $owner,
+        'manual_send_daily_limit' => -1,
+        'channel_access_token' => str_repeat('l', 64),
+    ]);
+    $service = new LineManualSendService(
+        $config,
+        $store,
+        function (string $url, array $headers, array $body, int $timeout) use (&$calls): array {
+            $calls[] = compact('url', 'headers', 'body', 'timeout');
+            return ['status' => 200, 'body' => '{}'];
+        },
+    );
+    $router = new LineRouter($config, $store, new FakeLineProfile(), null, $service);
+
+    [$status] = postSend($router, [
+        'confirmed' => true,
+        'lineUserId' => $owner,
+        'text' => '送ってはいけない',
+        'requestId' => 'request_negative_limit',
+    ]);
+
+    assertSame(503, $status);
+    assertSame(0, count($calls));
+});
+
 test('未確認または本人以外の手動送信回数はリセットしない', function (): void {
     $store = freshStore();
     $owner = 'UOWNER00000000000000000000000000';

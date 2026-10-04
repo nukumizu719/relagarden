@@ -528,7 +528,9 @@ jobs:
             printf "    'manual_send_enabled' => %s,\n" "$MANUAL_SEND_ENABLED"
             printf "    'manual_send_test_mode' => %s,\n" "$MANUAL_SEND_TEST_MODE"
             printf "    'manual_send_allowed_user_id' => '%s',\n" "$MANUAL_SEND_ALLOWED_USER_ID"
-            printf "    'manual_send_daily_limit' => 1,\n"
+            # 本人限定・確認後送信のテスト中は、アプリ独自の日次上限を設けない。
+            # 宛先完全一致、送信前確認、requestId二重送信防止は引き続き必須。
+            printf "    'manual_send_daily_limit' => 0,\n"
             printf "    'storage_dir' => '/home/xs674757/relagarden.jp/private/line-storage',\n"
             printf "    'require_https' => true,\n"
             printf '];\n'

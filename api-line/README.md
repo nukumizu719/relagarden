@@ -137,6 +137,7 @@ AI対象外のお客様は `reasonCode: MANUAL_ONLY`、`needsHuman: false` で�
 | `manual_send_enabled` | テスト開始直前だけ `true`。通常は `false` |
 | `manual_send_test_mode` | 本人限定中は必ず `true`。`false`なら送信しない |
 | `manual_send_allowed_user_id` | よしさん本人のLINE userId 1件だけ |
+| `manual_send_daily_limit` | `0`は本人限定テストの人工的な日次上限なし。正の数ならその回数で停止 |
 
 `/send` は `confirmed: true`、許可userIdの完全一致、重複しないrequestIdを
 すべて確認します。AI文章作成はこの入口では行いません。
@@ -192,7 +193,7 @@ LINE公式アカウント側の自動応答設定には影響しません。
 | 既存顧客へアプリから誤送信しない | 手動送信専用TEST_MODE、許可userId、`confirmed: true`がすべて揃った場合だけ動く |
 | AI障害時も問い合わせを残す | 先に受信箱へ保存し、GatewayやLINE返信が失敗しても200を返して手動対応へ戻す |
 | 自動AI受付の誤送信を抑える | replyToken返信だけを使い、受付5項目＋引継ぎで停止。途中解除も本人完全一致と明示確認が必要 |
-| 手動送信の二重送信を抑える | アプリ確認後の本人向け1件だけをpushし、requestIdを原子的に確保。本人も1日20回で停止 |
+| 手動送信の二重送信を抑える | アプリ確認後の本人向け1件だけをpushし、requestIdを原子的に確保。日次上限は設定可能で、0でも二重送信防止は維持 |
 | 秘密を公開領域へ置かない | 設定も保存データも `public_html` の外 |
 | 記録に個人情報を残さない | LINEのユーザーIDと本文は記録へ書かない。念のため伏せ字も掛ける |
 | 総当たりを防ぐ | 受信箱の読み出しに回数制限。Webhookには掛けない（取りこぼしを防ぐため） |
