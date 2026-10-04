@@ -65,6 +65,7 @@ return [
     'manual_send_test_mode' => false,
     'manual_send_allowed_user_id' => '',
     // 本人への手動送信も1日20回で停止する。
+    // 0なら本人限定テストの人工的な日次上限なし。通常は正の上限を推奨。
     'manual_send_daily_limit' => 20,
     'manual_send_timeout_seconds' => 5,
 
