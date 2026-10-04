@@ -42,6 +42,7 @@ iPhoneアプリ「リラガーデン」
 | POST | `/api/line/sync` | 取り込めたものへ受け取り済みの印を付ける | 必要 |
 | GET/POST | `/api/line/reception/mode` | 本人限定受付AIのON/OFFを確認・変更 | 必要 |
 | POST | `/api/line/send` | アプリで最終確認した本人向け文字返信を1件送る | 必要 |
+| POST | `/api/line/send/reset` | 本人限定テストの手動送信回数だけを確認後にリセット | 必要 |
 
 決めた入口以外、想定しないメソッドはすべて断ります。
 
@@ -139,6 +140,10 @@ AI対象外のお客様は `reasonCode: MANUAL_ONLY`、`needsHuman: false` で�
 
 `/send` は `confirmed: true`、許可userIdの完全一致、重複しないrequestIdを
 すべて確認します。AI文章作成はこの入口では行いません。
+
+本人限定テストの送信上限へ達した場合だけ、`/send/reset` へ許可userIdと
+`confirmed: true` を送ると、その本人の手動送信回数だけをリセットできます。
+送信済みrequestId、受付履歴、受信箱、ほかのお客様の記録は消しません。
 
 ⚠️ GitHubのPAT・Xserverの管理パスワードは使わないでください。
 LINE用の値だけを入れます。

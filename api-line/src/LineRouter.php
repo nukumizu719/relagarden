@@ -18,6 +18,7 @@ namespace Relagarden\Line;
  * | POST     | /api/line/reception/handoff | 本人限定受付を人対応へ切り替える |
  * | GET/POST | /api/line/reception/mode  | 本人限定受付AIを確認・切り替える   |
  * | POST     | /api/line/send    | 確認済みの本人向け文字返信を1件送る       |
+ * | POST     | /api/line/send/reset | 本人限定テストの手動送信回数を初期化する |
  */
 final class LineRouter
 {
@@ -104,6 +105,18 @@ final class LineRouter
                 $service = $this->manualSend
                     ?? new LineManualSendService($this->config, $this->store);
                 return [200, ['ok' => true] + $service->send($body)];
+            }
+
+            if ($route === '/send/reset') {
+                $this->requireMethod($method, 'POST');
+                $this->requireInboxToken($headers, $clientIp);
+                if (strlen($rawBody) > $this->config->int('max_send_body_bytes')) {
+                    throw new LineError(413, '内容が大きすぎます', 'E_SEND_RESET_BODY_TOO_BIG');
+                }
+                $body = $this->json($rawBody);
+                $service = $this->manualSend
+                    ?? new LineManualSendService($this->config, $this->store);
+                return [200, ['ok' => true] + $service->resetDailyLimit($body)];
             }
 
             if ($route === '/reception/reset') {

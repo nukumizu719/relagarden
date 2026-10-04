@@ -151,6 +151,44 @@ final class LineManualSendService
         return ['sent' => true, 'duplicate' => false, 'uncertain' => false];
     }
 
+    /**
+     * 本人限定テストの手動送信回数だけを、明示確認後に初期化する。
+     *
+     * 送信済みrequestIdの印は消さない。同じ送信要求の二重送信防止は
+     * リセット後も残し、回数カウンターだけを空にする。
+     *
+     * @param array<string,mixed> $body
+     * @return array{reset:bool}
+     */
+    public function resetDailyLimit(array $body): array
+    {
+        if (!$this->config->bool('manual_send_enabled')) {
+            throw new LineError(503, 'LINE送信はまだ準備中です', 'E_SEND_RESET_DISABLED');
+        }
+        if (!$this->config->bool('manual_send_test_mode')) {
+            throw new LineError(403, 'LINE送信は安全設定により停止しています', 'E_SEND_RESET_TEST_MODE_OFF');
+        }
+        if (($body['confirmed'] ?? null) !== true) {
+            throw new LineError(400, '送信回数リセットの確認が必要です', 'E_SEND_RESET_NOT_CONFIRMED');
+        }
+
+        $lineUserId = is_string($body['lineUserId'] ?? null)
+            ? trim($body['lineUserId'])
+            : '';
+        $allowedUserId = $this->config->str('manual_send_allowed_user_id');
+        if ($lineUserId === '' || $allowedUserId === '' || !hash_equals($allowedUserId, $lineUserId)) {
+            throw new LineError(403, 'この送信回数はリセットできません', 'E_SEND_RESET_TARGET');
+        }
+
+        $rateKey = 'manual_send_' . LineStore::hashKey($lineUserId);
+        $reset = $this->store->update('rate', $rateKey, static fn (array $record): array => ['times' => []]);
+        if (!$reset) {
+            throw new LineError(500, '送信回数をリセットできません', 'E_SEND_RESET_WRITE');
+        }
+        $this->store->log('I_MANUAL_SEND_TEST_RESET', 1);
+        return ['reset' => true];
+    }
+
     /** @return array{sent:bool,duplicate:bool,uncertain:bool} */
     private function duplicateResult(string $requestKey): array
     {
