@@ -60,9 +60,17 @@ const structuredData = {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="canonical" href={canonicalURL} />
     <meta name="generator" content={Astro.generator} />
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" href="/favicon-32x32.png" sizes="32x32" />
+    
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="theme-color" content="#15803d" />
 
     <title>{title}</title>
     <meta name="title" content={title} />
@@ -80,7 +88,6 @@ const structuredData = {
     <meta property="twitter:description" content={description} />
     <meta property="twitter:image" content={new URL(ogImage, Astro.site)} />
 
-    {/* 修正1：Google Fontsの読み込みを高速かつ安定させる（チラつき防止） */}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link 
@@ -88,28 +95,23 @@ const structuredData = {
       rel="stylesheet" 
     />
 
-    {/* 修正2：クリティカルCSS（外部ファイル読み込み前に適用させる最小限のスタイル） */}
     <style is:inline>
-      /* 背景色とフォントファミリーの初期固定 */
       html {
         background-color: #fcfcfc;
         font-family: 'Zen Maru Gothic', sans-serif;
       }
-      /* Heroエリアの黒チラつき対策：画像が来るまで黒ではなく近似色（深い緑等）にするか、
-         あるいはHeroセクション自体の背景色をここで予約する */
-      #hero {
-        background-color: #1a2e1a; /* 例：画像に近い暗色 */
-      }
-      /* フォント読み込み完了まで非表示にする（FOUT対策） */
+      /* フォント読み込み中のチラつきを抑えるための初期非表示 */
       body {
         opacity: 0;
       }
+      #hero {
+        background-color: #1a2e1a;
+      }
     </style>
 
-    {/* 修正3：bodyのフェードイン制御（一瞬で完了します） */}
     <script is:inline>
       window.addEventListener('DOMContentLoaded', () => {
-        document.body.style.transition = 'opacity 0.2s ease-in';
+        document.body.style.transition = 'opacity 0.25s ease-in';
         document.body.style.opacity = '1';
       });
     </script>

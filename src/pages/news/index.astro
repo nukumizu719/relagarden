@@ -1,50 +1,51 @@
 ---
 /**
  * news/index.astro
- * ニュース一覧の1ページ目を表示するためのエントリポイント
+ * microCMSのデータを統合し、ニュース一覧の1ページ目を表示します。
  */
-import { getCollection } from 'astro:content';
-import PageContent from './[page].astro'; // 【重要】同じ階層の[page].astroをコンポーネントとして読み込む
+import { getCases, getNews } from '../../lib/microcms';
+import PageContent from './[page].astro';
 
-// 1. データの取得（施工事例とニュースの両方）
-const allCases = await getCollection('cases').catch(() => []);
-const allNews = await getCollection('news').catch(() => []);
+// 1. microCMSからデータを並列取得（最新分を多めに取得）
+const [casesResponse, newsResponse] = await Promise.all([
+  getCases({ limit: 100, orders: '-pubDate' }),
+  getNews({ limit: 100, orders: '-pubDate' })
+]);
 
-// 2. 施工事例をニュース形式のフォーマットに変換
-const caseAsNews = allCases
-  .filter(entry => !entry.slug.startsWith('_'))
-  .map(c => ({
-    date: c.data.pubDate,
-    title: `【施工事例】${c.data.area}：${c.data.title}`,
-    url: `/cases/${c.slug}/`,
-    category: '施工事例',
-    description: c.data.description
-  }));
-
-// 3. 手動ニュース（content/news）を統合
-const manualNews = allNews.map(n => ({
-  date: n.data.pubDate,
-  title: n.data.title,
-  url: `/news/${n.slug}/`,
-  category: n.data.category || 'お知らせ',
-  description: n.data.description
+// 2. 施工事例をニュース形式に変換
+const caseAsNews = casesResponse.contents.map((c) => ({
+  date: new Date(c.pubDate || c.publishedAt),
+  title: `【施工事例】${c.area}：${c.title}`,
+  url: `/cases/${c.id}/`,
+  category: '施工事例',
 }));
 
-// 4. 全データを統合して新しい順（降順）にソート
+// 3. 手動ニュースを統合用に変換
+const manualNews = newsResponse.contents.map((n) => ({
+  date: new Date(n.pubDate || n.publishedAt),
+  title: n.title,
+  url: `/news/${n.id}/`,
+  category: n.category?.[0] || 'お知らせ',
+}));
+
+// 4. 全データを合体させて日付順（降順）にソート
 const sortedNews = [...caseAsNews, ...manualNews].sort(
-  (a, b) => b.date.valueOf() - a.date.valueOf()
+  (a, b) => b.date.getTime() - a.date.getTime()
 );
 
-// 5. ページネーションデータの擬似作成（1ページあたり9件）
+// 5. [page].astro に渡すための擬似ページネーションオブジェクトを作成
 const pageSize = 9;
+const totalCount = sortedNews.length;
+const lastPage = Math.ceil(totalCount / pageSize);
+
 const page = {
   data: sortedNews.slice(0, pageSize),
   url: {
     prev: undefined,
-    next: sortedNews.length > pageSize ? "/news/2/" : undefined,
+    next: totalCount > pageSize ? "/news/2/" : undefined,
   },
   currentPage: 1,
-  lastPage: Math.ceil(sortedNews.length / pageSize),
+  lastPage: lastPage,
 };
 ---
 

@@ -1,0 +1,81 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { client } from "../../lib/microcms";
+import type { Case } from "../../lib/microcms";
+
+// 1. 静的パスの生成
+export async function getStaticPaths() {
+  try {
+    const response = await client.get({ endpoint: "cases" });
+    
+    // 重要：paramsのキーをファイル名と同じ 'id' に統一します
+    return response.contents.map((content: Case) => ({
+      params: { id: content.id },
+    }));
+  } catch (error) {
+    console.error("静的パスの取得に失敗しました:", error);
+    return [];
+  }
+}
+
+// 2. URLパラメーターから 'id' を取得
+const { id } = Astro.params;
+
+// 3. 取得したIDを使ってmicroCMSから詳細データを取得
+const data = await client.get({ 
+  endpoint: "cases", 
+  contentId: id 
+}) as Case;
+
+// --- 以下、表示ロジック ---
+const displayDate = data.pubDate || data.publishedAt;
+const pageTitle = `【${data.area}】${data.title} | 人工芝施工事例`;
+const description = data.beforeConcerns 
+  ? `${data.area}での人工芝施工事例。${data.beforeConcerns.slice(0, 80)}...`
+  : `${data.area}での人工芝施工事例：${data.title}`;
+---
+
+<BaseLayout exactTitle={pageTitle} description={description}>
+  <article class="bg-white pb-20">
+    <div class="max-w-4xl mx-auto px-4 pt-12">
+      <nav class="flex text-xs text-gray-400 mb-6 gap-2">
+        <a href="/" class="hover:text-green-700">TOP</a>
+        <span>/</span>
+        <a href="/news/" class="hover:text-green-700">新着情報</a>
+        <span>/</span>
+        <span class="text-gray-600">{data.area}の事例</span>
+      </nav>
+      
+      <header class="mb-10 border-b pb-8">
+        <div class="flex items-center gap-3 mb-4">
+          <time class="text-xs text-gray-400 font-mono">
+            {new Date(displayDate).toLocaleDateString('ja-JP').replace(/\//g, '.')}
+          </time>
+          <span class="text-[10px] bg-green-700 text-white px-2 py-0.5 rounded font-bold uppercase">Case Study</span>
+        </div>
+        <h1 class="text-2xl md:text-4xl font-bold text-gray-900">{data.title}</h1>
+      </header>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-16">
+        <div class="relative aspect-[4/3] rounded-2xl overflow-hidden shadow-sm border">
+          <span class="absolute top-4 left-4 bg-gray-800 text-white px-3 py-1 text-[10px] font-bold z-10">BEFORE</span>
+          {data.beforeImage ? (
+            <img src={data.beforeImage.url} class="w-full h-full object-cover grayscale-[0.2]" alt="施工前" />
+          ) : (
+            <div class="w-full h-full flex items-center justify-center bg-gray-50 text-gray-300">No Image</div>
+          )}
+        </div>
+        <div class="relative aspect-[4/3] rounded-2xl overflow-hidden shadow-xl border-4 border-green-50">
+          <span class="absolute top-4 left-4 bg-green-700 text-white px-3 py-1 text-[10px] font-bold z-10">AFTER</span>
+          <img src={data.image.url} class="w-full h-full object-cover" alt="施工後" />
+        </div>
+      </div>
+
+      <div class="prose prose-lg max-w-none" set:html={data.content} />
+      
+      <footer class="mt-16 text-center">
+        <a href="/news/" class="text-sm font-bold text-gray-400 hover:text-green-700">← 一覧に戻る</a>
+      </footer>
+    </div>
+  </article>
+</BaseLayout>

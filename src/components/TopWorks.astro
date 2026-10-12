@@ -1,13 +1,16 @@
 ---
-import { getCollection } from 'astro:content';
-import { Image } from 'astro:assets'; // 追加
+import { client, type Case } from '../lib/microcms';
 
-const allCases = await getCollection('cases');
-// 日付順にソートして最新3件を取得（アンダースコアで始まる下書きを除外）
-const recentCases = allCases
-  .filter(entry => !entry.slug.startsWith('_'))
-  .sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf())
-  .slice(0, 3);
+// microCMSから最新3件のみを取得
+const response = await client.get({
+  endpoint: "cases",
+  queries: {
+    limit: 3,
+    orders: "-pubDate", // 手動日付の新しい順
+  }
+});
+
+const recentCases: Case[] = response.contents;
 ---
 
 <section class="py-20 bg-[#f9faf7]" id="top-works">
@@ -26,20 +29,19 @@ const recentCases = allCases
     <div class="grid grid-cols-1 md:grid-cols-3 gap-10">
       {recentCases.map((caseEntry) => (
         <article class="group bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-500 flex flex-col relative">
-          <a href={`/cases/${caseEntry.slug}/`} class="relative block overflow-hidden aspect-[16/10]">
-            {/* 修正：Imageコンポーネントを使用 */}
-            <Image 
-              src={caseEntry.data.image} 
-              alt={caseEntry.data.title} 
-              width={800} 
-              height={500}
-              format="avif"
+          <a href={`/cases/${caseEntry.id}/`} class="relative block overflow-hidden aspect-[16/10]">
+            {/* microCMSの画像パラメータで動的最適化（WebP変換・リサイズ） */}
+            <img 
+              src={`${caseEntry.image.url}?w=800&h=500&fit=crop&fm=webp&q=85`} 
+              alt={caseEntry.title} 
               class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+              loading="lazy"
+              decoding="async"
             />
             <span class="absolute top-4 left-4 bg-green-700/90 backdrop-blur-sm text-white text-[11px] font-bold px-3 py-1 rounded-full tracking-wider z-10">
-              {caseEntry.data.area}
+              {caseEntry.area}
             </span>
-            {caseEntry.data.beforeImage && (
+            {caseEntry.beforeImage && (
               <span class="absolute bottom-4 right-4 bg-black/60 backdrop-blur-sm text-white text-[10px] px-2 py-1 rounded z-10">
                 Before Afterあり
               </span>
@@ -47,26 +49,26 @@ const recentCases = allCases
           </a>
 
           <div class="p-8 flex-grow flex flex-col">
-            <a href={`/cases/${caseEntry.slug}/`} class="block mb-4">
+            <a href={`/cases/${caseEntry.id}/`} class="block mb-4">
               <h3 class="text-lg font-bold text-gray-800 line-clamp-2 leading-relaxed font-zen group-hover:text-green-700 transition-colors">
-                {caseEntry.data.title}
+                {caseEntry.title}
               </h3>
             </a>
             
             <div class="mt-auto pt-5 border-t border-gray-100 flex items-center justify-between text-sm">
               <div class="flex flex-col gap-1">
                 <span class="text-gray-400 text-[10px] uppercase tracking-widest font-sans">Cost</span>
-                <span class="font-bold text-gray-700 font-zen">{caseEntry.data.cost}</span>
+                <span class="font-bold text-gray-700 font-zen">{caseEntry.cost || "お問合せ"}</span>
               </div>
               <div class="flex flex-col gap-1 text-right">
                 <span class="text-gray-400 text-[10px] uppercase tracking-widest font-sans">Period</span>
-                <span class="font-bold text-gray-700 font-zen">{caseEntry.data.period}</span>
+                <span class="font-bold text-gray-700 font-zen">{caseEntry.period || "要相談"}</span>
               </div>
             </div>
 
             <div class="mt-6">
               <a 
-                href={`/cases/${caseEntry.slug}/`} 
+                href={`/cases/${caseEntry.id}/`} 
                 class="text-green-700 text-sm font-bold flex items-center w-fit group/btn"
               >
                 詳細を見る

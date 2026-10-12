@@ -1,38 +1,43 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
-import { getCollection } from 'astro:content';
+import { getCases, getNews } from '../../lib/microcms';
 
-export async function getStaticPaths({ paginate }) {
-  const allCases = await getCollection('cases').catch(() => []);
-  const allNews = await getCollection('news').catch(() => []);
+export async function getStaticPaths({ paginate }: any) {
+  // 1. microCMSから全データを並列取得
+  const [casesResponse, newsResponse] = await Promise.all([
+    getCases({ limit: 100, orders: '-pubDate' }),
+    getNews({ limit: 100, orders: '-pubDate' })
+  ]);
 
-  const caseAsNews = allCases
-    .filter(entry => !entry.slug.startsWith('_'))
-    .map(c => ({
-      date: c.data.pubDate,
-      title: `【施工事例】${c.data.area}：${c.data.title}`,
-      url: `/cases/${c.slug}/`,
-      category: '施工事例',
-    }));
-
-  const manualNews = allNews.map(n => ({
-    date: n.data.pubDate,
-    title: n.data.title,
-    url: `/news/${n.slug}/`,
-    category: n.data.category || 'お知らせ',
+  // 2. 施工事例をニュース形式のオブジェクトに変換
+  const caseAsNews = casesResponse.contents.map((c) => ({
+    date: new Date(c.pubDate || c.publishedAt),
+    title: `【施工事例】${c.area}：${c.title}`,
+    url: `/cases/${c.id}/`,
+    category: '施工事例',
   }));
 
+  // 3. 手動ニュースを統合用に変換
+  const manualNews = newsResponse.contents.map((n) => ({
+    date: new Date(n.pubDate || n.publishedAt),
+    title: n.title,
+    url: `/news/${n.id}/`,
+    category: n.category?.[0] || 'お知らせ',
+  }));
+
+  // 4. 全データを合体させて日付順（降順）にソート
   const sortedNews = [...caseAsNews, ...manualNews].sort(
-    (a, b) => b.date.valueOf() - a.date.valueOf()
+    (a, b) => b.date.getTime() - a.date.getTime()
   );
 
+  // 5. 1ページあたり9件でページネーション生成
   return paginate(sortedNews, { pageSize: 9 });
 }
 
 const { page } = Astro.props;
 ---
 
-<BaseLayout exactTitle={`新着情報 - ${page.currentPage}ページ目`}>
+<BaseLayout pageTitle={`新着情報 - ${page.currentPage}ページ目`} description="リラガーデンの最新の施工事例やお知らせを一覧でご紹介します。">
   <div class="bg-[#f9faf7] min-h-screen pb-20">
     <section class="bg-white border-b border-gray-100 pt-16 pb-12 mb-8 md:mb-12 text-center">
       <div class="max-w-6xl mx-auto px-5">
@@ -43,7 +48,7 @@ const { page } = Astro.props;
 
     <div class="max-w-4xl mx-auto px-5">
       <div class="grid gap-4 md:gap-5">
-        {page.data.map((item) => (
+        {page.data.map((item: any) => (
           <a href={item.url} class="group block bg-white p-6 md:p-8 rounded-2xl shadow-sm hover:shadow-xl transition-all duration-500 border border-gray-100">
             <div class="flex flex-col md:flex-row md:items-center gap-4 md:gap-8">
               <div class="flex items-center gap-4 shrink-0 md:w-48">
@@ -67,7 +72,7 @@ const { page } = Astro.props;
         ))}
       </div>
 
-      <nav class="flex justify-center items-center mt-12 md:mt-16 gap-2">
+      <nav class="flex justify-center items-center mt-12 md:mt-16 gap-2" aria-label="ページ移動">
         {page.url.prev ? (
           <a href={page.url.prev} class="w-10 h-10 flex items-center justify-center rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-green-700 hover:text-white transition-all">&larr;</a>
         ) : (

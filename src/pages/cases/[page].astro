@@ -1,18 +1,29 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
-import { getCollection } from 'astro:content';
-import { Image } from 'astro:assets'; // 追加：画像最適化コンポーネント
+import { client, type Case } from "../../lib/microcms";
 
-export async function getStaticPaths({ paginate }) {
-  const allCases = await getCollection('cases');
-  const sortedCases = allCases.sort(
-    (a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf()
-  );
-  return paginate(sortedCases, { pageSize: 9 });
+// 1. microCMSから全記事を取得してページ分割（paginate）を実行
+export async function getStaticPaths({ paginate }: any) {
+  try {
+    const response = await client.get({ 
+      endpoint: "cases",
+      queries: { 
+        orders: "-pubDate", // 手動設定の日付の新しい順
+        limit: 100 // 最大100件まで取得（運用に合わせて調整）
+      }
+    });
+    const allCases: Case[] = response.contents;
+    
+    return paginate(allCases, { pageSize: 9 });
+  } catch (error) {
+    console.error("データの取得に失敗しました:", error);
+    return [];
+  }
 }
 
+// 2. ページデータの受け取り
 const { page } = Astro.props;
-const sortedCases = page.data;
+const cases = page.data as Case[];
 
 const pageTitle = "施工事例一覧";
 const description = "リラガーデンが手掛けた愛知県岡崎市周辺の人工芝施工実績をご紹介します。";
@@ -32,40 +43,41 @@ const description = "リラガーデンが手掛けた愛知県岡崎市周辺�
 
     <div class="max-w-6xl mx-auto px-5">
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-10">
-        {sortedCases.map((caseEntry) => (
+        {cases.map((item) => (
           <article class="group relative bg-white rounded-3xl overflow-hidden shadow-sm hover:shadow-xl transition-all duration-500">
-            <a href={`/cases/${caseEntry.slug}/`} class="block h-full flex flex-col">
+            <a href={`/cases/${item.id}/`} class="block h-full flex flex-col">
               <div class="relative overflow-hidden aspect-[16/10]">
-                {/* 修正：Imageコンポーネントを使用し、AVIF変換とリサイズを適用 */}
-                <Image 
-                  src={caseEntry.data.image} 
-                  alt={caseEntry.data.title} 
-                  width={800} 
-                  height={500}
-                  format="avif"
-                  quality="high"
+                {/* microCMSの画像はURLパラメータで最適化するのが最も高速です。
+                  ?w=800&h=500&fit=crop (サイズ指定)
+                  &fm=webp (WebP変換)
+                */}
+                <img 
+                  src={`${item.image.url}?w=800&h=500&fit=crop&fm=webp&q=80`} 
+                  alt={item.title} 
                   class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+                  loading="lazy"
+                  decoding="async"
                 />
-                <span class="absolute top-4 left-4 bg-green-700/90 backdrop-blur-sm text-white text-[10px] font-bold px-3 py-1.5 rounded-full tracking-wider">
-                  {caseEntry.data.area}
+                <span class="absolute top-4 left-4 bg-green-700/90 backdrop-blur-sm text-white text-[10px] font-bold px-3 py-1.5 rounded-full tracking-wider z-10">
+                  {item.area}
                 </span>
               </div>
 
               <div class="p-6 md:p-8 flex-grow flex flex-col">
-                <time class="text-[10px] text-gray-400 font-bold mb-3 tracking-widest uppercase">
-                  {caseEntry.data.pubDate.toLocaleDateString('ja-JP')}
+                <time datetime={item.pubDate || item.publishedAt} class="text-[10px] text-gray-400 font-bold mb-3 tracking-widest uppercase">
+                  {new Date(item.pubDate || item.publishedAt).toLocaleDateString('ja-JP').replace(/\//g, '.')}
                 </time>
                 <h2 class="text-base md:text-lg font-bold text-gray-800 mb-4 line-clamp-2 leading-relaxed font-zen group-hover:text-green-700 transition-colors">
-                  {caseEntry.data.title}
+                  {item.title}
                 </h2>
                 <div class="mt-auto pt-5 border-t border-gray-50 flex items-center justify-between text-xs">
                   <div class="flex flex-col gap-1">
-                    <span class="text-gray-400 text-[9px] uppercase tracking-widest">Cost</span>
-                    <span class="font-bold text-gray-700">{caseEntry.data.cost}</span>
+                    <span class="text-gray-400 text-[9px] uppercase tracking-widest font-sans">Cost</span>
+                    <span class="font-bold text-gray-700">{item.cost || "お問合せ"}</span>
                   </div>
                   <div class="flex flex-col gap-1 text-right">
-                    <span class="text-gray-400 text-[9px] uppercase tracking-widest">Period</span>
-                    <span class="font-bold text-gray-700">{caseEntry.data.period}</span>
+                    <span class="text-gray-400 text-[9px] uppercase tracking-widest font-sans">Period</span>
+                    <span class="font-bold text-gray-700">{item.period || "要相談"}</span>
                   </div>
                 </div>
               </div>
@@ -114,9 +126,7 @@ const description = "リラガーデンが手掛けた愛知県岡崎市周辺�
             現地調査・お見積もりは無料です。<br class="md:hidden" />まずはお気軽にお問い合わせください。
           </p>
           <a href="/contact/" class="inline-block bg-white text-green-800 px-10 md:px-12 py-4 md:py-5 rounded-full font-bold hover:bg-green-50 transition-all shadow-lg text-sm md:text-base leading-tight">
-            無料見積もり
-            <span class="hidden md:inline">・</span><br class="md:hidden" />
-            お問い合わせ
+            無料見積もり・お問い合わせ
           </a>
         </div>
         <div class="absolute top-0 right-0 w-32 h-32 bg-green-700 rounded-full -mr-16 -mt-16 opacity-50"></div>

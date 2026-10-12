@@ -1,6 +1,6 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
-import { getCollection } from 'astro:content';
+import { getCases, getNews } from '../lib/microcms';
 
 // 既存のコンポーネント群
 import Hero from '../components/Hero.astro';
@@ -15,43 +15,42 @@ import TopContact from '../components/TopContact.astro';
 
 // --- ロジカル・データ統合レイヤー ---
 
-// 1. データの取得（Content Collections）
-const allCases = await getCollection('cases').catch(() => []);
-const allNews = await getCollection('news').catch(() => []);
+// 1. microCMSからデータを並列取得（最新5件ずつ）
+const [casesResponse, newsResponse] = await Promise.all([
+  getCases({ limit: 5, orders: '-pubDate' }),
+  getNews({ limit: 5, orders: '-pubDate' })
+]);
 
-// 2. 施工事例のフィルタリング（下書き除外）
-const activeCases = allCases
-  .filter(entry => !entry.slug.startsWith('_'))
-  .sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf());
-
-// 3. ニュース統合ロジック（施工事例の更新を自動で新着情報に変換）
-const caseAsNews = activeCases.map(c => ({
-  date: c.data.pubDate,
-  title: `【施工事例】${c.data.area}：${c.data.title}を公開しました`,
-  url: `/cases/${c.slug}/`,
+// 2. 施工事例をニュース形式に変換
+const caseAsNews = casesResponse.contents.map((c) => ({
+  date: new Date(c.pubDate || c.publishedAt),
+  title: `【施工事例】${c.area}：${c.title}を公開しました`,
+  url: `/cases/${c.id}/`,
   label: '施工事例'
 }));
 
-const manualNews = allNews.map(n => ({
-  date: n.data.pubDate,
-  title: n.data.title,
-  url: `/news/${n.slug}/`,
-  label: n.data.category || 'お知らせ'
+// 3. 手動ニュースを統合用に変換
+const manualNews = newsResponse.contents.map((n) => ({
+  date: new Date(n.pubDate || n.publishedAt),
+  title: n.title,
+  url: `/news/${n.id}/`,
+  label: n.category?.[0] || 'お知らせ' // カテゴリの最初の要素を使用
 }));
 
-// 合体させて最新3〜5件を抽出
+// 4. 合体させて最新5件を抽出
 const combinedNews = [...caseAsNews, ...manualNews]
-  .sort((a, b) => b.date.valueOf() - a.date.valueOf())
+  .sort((a, b) => b.date.getTime() - a.date.getTime())
   .slice(0, 5);
+
+const pageTitle = "人工芝専門店リラガーデン | 岡崎市・安城市・豊田市の施工・販売";
+const description = "愛知県岡崎市を中心に人工芝の施工・販売を行うリラガーデン。下地作りからこだわる高品質な施工で、雑草対策や子供が遊べる理想のお庭を実現します。現地調査・見積無料。";
 ---
 
-<BaseLayout>
+<BaseLayout pageTitle={pageTitle} description={description}>
   {/* 1. 導入：ブランドイメージ */}
   <Hero />
 
-  {/* 【新着情報：自動統合セクション】
-      Heroと課題解決の間に挟むことで、サイトが「生きている（更新されている）」ことを即座に伝えます。
-  */}
+  {/* 【新着情報：自動統合セクション】 */}
   <section class="py-10 bg-white border-b border-gray-50">
     <div class="max-w-4xl mx-auto px-5">
       <div class="flex items-center justify-between mb-6">
@@ -70,7 +69,7 @@ const combinedNews = [...caseAsNews, ...manualNews]
                 <time class="text-xs font-sans text-gray-400">
                   {item.date.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '.')}
                 </time>
-                <span class={`text-[9px] font-bold px-1.5 py-0.5 rounded shadow-sm whitespace-nowrap ${
+                <span class={`text-[9px] font-bold px-2 py-0.5 rounded shadow-sm whitespace-nowrap ${
                   item.label === '施工事例' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-600'
                 }`}>
                   {item.label}

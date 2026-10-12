@@ -1,23 +1,28 @@
 ---
-// /cases/ にアクセスが来たら、1ページ目の内容をそのまま表示する設定
-import { getCollection } from 'astro:content';
-import PageContent from './[page].astro'; // [page].astroをコンポーネントとして読み込む
+import { client, type Case } from '../../lib/microcms';
+import PageContent from './[page].astro';
 
-const allCases = await getCollection('cases');
-const sortedCases = allCases.sort(
-  (a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf()
-);
+// 1. microCMSから全事例を取得（日付順）
+const response = await client.get({ 
+  endpoint: 'cases',
+  queries: { 
+    orders: '-pubDate', // 手動設定の日付の降順
+    limit: 100 
+  }
+});
 
-// 1ページ目のデータを擬似的に作成して渡す
+const allCases: Case[] = response.contents;
+
+// 2. 1ページ目のデータを擬似的に作成（ページネーション用）
 const pageSize = 9;
 const page = {
-  data: sortedCases.slice(0, pageSize),
+  data: allCases.slice(0, pageSize),
   url: {
     prev: undefined,
-    next: sortedCases.length > pageSize ? "/cases/2/" : undefined,
+    next: allCases.length > pageSize ? "/cases/2/" : undefined,
   },
   currentPage: 1,
-  lastPage: Math.ceil(sortedCases.length / pageSize),
+  lastPage: Math.ceil(allCases.length / pageSize),
 };
 ---
 
