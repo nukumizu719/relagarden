@@ -51,6 +51,10 @@ Astro + Tailwind の静的サイト。main への push で GitHub Actions（`.gi
 
 gh CLI が利用可能（アカウント nukumizu719-cpu）。PR作成までコマンドで実行する。
 
+リポジトリは組織 `nukumizu719/relagarden` に移管済み。手元の origin が旧URL
+（`nukumizu719-cpu/relagarden`）のままだと `gh pr create` が失敗するため、
+gh の PR 操作には `--repo nukumizu719/relagarden` を付ける。
+
 ### すべての変更に共通
 
 1. `git switch main && git pull` で最新にする
