@@ -1,23 +1,19 @@
 ---
+// くらしのマーケットのロゴは、運営元（みんなのマーケット株式会社）の
+// 事前承諾なしに使えない（https://minma.jp/mediakit）。承諾を得るまでロゴは置かず、
+// 口コミの掲載先を文字で示すリンクにとどめる。
 interface Props {
   link?: string;
-  imagePath?: string;
 }
 
-const { 
-  link = "https://curama.jp/617865852/review/", 
-  imagePath = "/images/くらしのマーケット.png" 
+const {
+  link = "https://curama.jp/617865852/review/",
 } = Astro.props;
 ---
 
 <section class="review-section">
   <div class="container">
     <div class="review-feedback-inner">
-      {/* 斜めロゴ */}
-      <div class="feedback-logo-wrap">
-        <img src={imagePath} alt="くらしのマーケット" class="feedback-img" />
-      </div>
-      
       {/* テキスト */}
       <p class="feedback-catch">＼ 実際に施工されたお客様の声 ／</p>
       
@@ -26,6 +22,7 @@ const {
         リアルな評価はここから
         <span class="feedback-arrow">→</span>
       </a>
+      <p class="feedback-note">口コミサイト「くらしのマーケット」の当店ページが開きます</p>
     </div>
   </div>
 </section>
@@ -47,22 +44,6 @@ const {
     flex-direction: column;
     align-items: center;
     width: 100%;
-  }
-
-  /* ロゴ：斜め10度 */
-  .feedback-logo-wrap {
-    width: 200px;
-    margin-bottom: 15px;
-    transform: rotate(-10deg);
-    transition: transform 0.3s ease;
-  }
-  .review-feedback-inner:hover .feedback-logo-wrap {
-    transform: rotate(-5deg) scale(1.05);
-  }
-  .feedback-img {
-    width: 100%;
-    height: auto;
-    display: block;
   }
 
   .feedback-catch {
@@ -96,10 +77,15 @@ const {
     box-shadow: 0 10px 25px rgba(46, 125, 50, 0.35);
   }
   .feedback-arrow { margin-left: 12px; }
+  .feedback-note {
+    margin-top: 12px;
+    font-size: 0.8rem;
+    color: #777;
+    text-align: center;
+  }
 
   /* スマホ対応 */
   @media (max-width: 600px) {
-    .feedback-logo-wrap { width: 160px; }
     .feedback-catch { font-size: 1rem; }
     .feedback-btn { 
       width: 100%; 
