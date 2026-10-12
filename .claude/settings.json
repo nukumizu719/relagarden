@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build)",
+      "Bash(npm run dev)",
+      "Bash(npm ci)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git branch --show-current)",
+      "Bash(git switch main)",
+      "Bash(git pull)",
+      "Bash(git fetch *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh run list *)",
+      "Bash(gh run view *)",
+      "Bash(gh run watch *)",
+      "mcp__Claude_Browser__navigate",
+      "mcp__Claude_Browser__preview_start",
+      "mcp__Claude_Browser__preview_stop",
+      "mcp__Claude_Browser__preview_logs",
+      "mcp__Claude_Browser__resize_window",
+      "mcp__Claude_Browser__get_page_text",
+      "mcp__Claude_Browser__read_page",
+      "mcp__Claude_Browser__find",
+      "mcp__Claude_Browser__read_console_messages",
+      "mcp__Claude_Browser__read_network_requests",
+      "mcp__Claude_Browser__tabs_create",
+      "mcp__terminal__read_terminal"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Read(./.env)",
+      "Read(./**/private/config.php)",
+      "Read(./**/private/line-config.php)"
+    ]
+  }
+}
